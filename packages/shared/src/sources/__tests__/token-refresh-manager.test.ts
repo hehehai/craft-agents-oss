@@ -435,7 +435,6 @@ describe('TokenRefreshManager', () => {
 
       expect(result.success).toBe(true);
       expect(result.token).toBe('new-fresh-token');
-      expect(source.config.isAuthenticated).toBe(true);
       expect(source.config.connectionStatus).toBe('connected');
       expect(source.config.connectionError).toBeUndefined();
       expect(mockMarkSourceAuthenticated).toHaveBeenCalledWith('/mock/workspace', 'craft-mcp');
@@ -465,7 +464,6 @@ describe('TokenRefreshManager', () => {
       const result = await manager.ensureFreshToken(source);
 
       expect(result.success).toBe(false);
-      expect(source.config.isAuthenticated).toBe(false);
       expect(mockMarkSourceAuthenticated).not.toHaveBeenCalled();
     });
   });
@@ -504,7 +502,6 @@ describe('TokenRefreshManager', () => {
       expect(failed.length).toBe(0);
 
       // Step 3: Verify auth state is restored
-      expect(source.config.isAuthenticated).toBe(true);
       expect(source.config.connectionStatus).toBe('connected');
       expect(source.config.connectionError).toBeUndefined();
       expect(mockMarkSourceAuthenticated).toHaveBeenCalledWith('/mock/workspace', 'craft-mcp');

@@ -505,6 +505,8 @@ const api: ElectronAPI = {
   },
   getGitBranch: (dirPath: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.GET_GIT_BRANCH, dirPath),
+  getGitDiffStats: (dirPath: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.GET_GIT_DIFF_STATS, dirPath),
 
   // Git Bash (Windows)
   checkGitBash: () => ipcRenderer.invoke(IPC_CHANNELS.GITBASH_CHECK),

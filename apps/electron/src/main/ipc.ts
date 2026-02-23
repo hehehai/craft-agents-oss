@@ -1374,6 +1374,73 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
     return getLatestReleaseVersion()
   })
 
+  const parseGitNumstat = (numstat: string): { added: number; removed: number } => {
+    let added = 0
+    let removed = 0
+
+    for (const line of numstat.split('\n')) {
+      if (!line.trim()) continue
+      const [addedRaw, removedRaw] = line.split('\t')
+      if (!addedRaw || !removedRaw) continue
+
+      if (addedRaw !== '-') {
+        const value = Number.parseInt(addedRaw, 10)
+        if (!Number.isNaN(value)) added += value
+      }
+
+      if (removedRaw !== '-') {
+        const value = Number.parseInt(removedRaw, 10)
+        if (!Number.isNaN(value)) removed += value
+      }
+    }
+
+    return { added, removed }
+  }
+
+  const countTextLines = (buffer: Buffer): number => {
+    if (buffer.length === 0) return 0
+
+    // Treat binary files as zero-line additions to match git numstat behavior ("-").
+    for (const byte of buffer) {
+      if (byte === 0) return 0
+    }
+
+    const text = buffer.toString('utf-8')
+    if (!text) return 0
+
+    const lineBreakCount = (text.match(/\r\n|\n|\r/g) || []).length
+    const endsWithLineBreak = text.endsWith('\n') || text.endsWith('\r')
+    return lineBreakCount + (endsWithLineBreak ? 0 : 1)
+  }
+
+  const getTrackedDiffStats = (dirPath: string): { added: number; removed: number } => {
+    // Preferred: total tracked delta from HEAD (staged + unstaged combined).
+    try {
+      const fromHead = execSync('git diff --numstat HEAD', {
+        cwd: dirPath,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 5000,
+      }).trim()
+      return parseGitNumstat(fromHead)
+    } catch {
+      // Fallback for repositories without HEAD (e.g., initial commit state).
+      const unstaged = execSync('git diff --numstat', {
+        cwd: dirPath,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 5000,
+      }).trim()
+      const staged = execSync('git diff --numstat --cached', {
+        cwd: dirPath,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 5000,
+      }).trim()
+      return parseGitNumstat([unstaged, staged].filter(Boolean).join('\n'))
+    }
+  }
+
   // Get git branch for a directory (returns null if not a git repo or git unavailable)
   ipcMain.handle(IPC_CHANNELS.GET_GIT_BRANCH, (_event, dirPath: string) => {
     try {
@@ -1384,6 +1451,46 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
         timeout: 5000,  // 5 second timeout
       }).trim()
       return branch || null
+    } catch {
+      // Not a git repo, git not installed, or other error
+      return null
+    }
+  })
+
+  // Get git diff stats for a directory (returns null if not a git repo or git unavailable)
+  ipcMain.handle(IPC_CHANNELS.GET_GIT_DIFF_STATS, (_event, dirPath: string) => {
+    try {
+      // Verify this is a git working tree.
+      execSync('git rev-parse --is-inside-work-tree', {
+        cwd: dirPath,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 5000,
+      })
+
+      const trackedStats = getTrackedDiffStats(dirPath)
+      let added = trackedStats.added
+      let removed = trackedStats.removed
+
+      // Include untracked files in +x count.
+      const untrackedRaw = execSync('git ls-files --others --exclude-standard -z', {
+        cwd: dirPath,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 5000,
+      })
+      const untrackedFiles = untrackedRaw.split('\0').filter(Boolean)
+
+      for (const relativePath of untrackedFiles) {
+        try {
+          const content = readFileSync(join(dirPath, relativePath))
+          added += countTextLines(content)
+        } catch {
+          // Ignore files that disappeared between ls-files and read.
+        }
+      }
+
+      return { added, removed }
     } catch {
       // Not a git repo, git not installed, or other error
       return null

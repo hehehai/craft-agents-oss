@@ -7,8 +7,8 @@ import { cn } from '@/lib/utils'
 export interface FreeFormInputContextBadgeProps {
   /** Left area - fully customizable (icon, avatar stack, etc.) */
   icon: React.ReactNode
-  /** Label text - shown in expanded state or collapsed with selection */
-  label: string
+  /** Label content - shown in expanded state or collapsed with selection */
+  label: React.ReactNode
   /** Whether to show expanded state (icon + label + chevron) vs collapsed */
   isExpanded?: boolean
   /** Whether there's an active selection (affects collapsed state styling and shows label) */

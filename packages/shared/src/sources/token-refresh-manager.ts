@@ -154,9 +154,11 @@ export class TokenRefreshManager {
 
         // Restore auth state — undoes markSourceNeedsReauth() from startup
         markSourceAuthenticated(source.workspaceRootPath, source.config.slug);
-        source.config.isAuthenticated = true;
-        source.config.connectionStatus = 'connected';
-        source.config.connectionError = undefined;
+        Object.assign(source.config, {
+          isAuthenticated: true,
+          connectionStatus: 'connected',
+          connectionError: undefined,
+        });
 
         return { success: true, token };
       } else {

@@ -162,12 +162,8 @@ export function deriveConnectionStatus(source: {
   const requiresAuth = (mcp?.authType && mcp.authType !== 'none') ||
                        (api?.authType && api.authType !== 'none')
 
-  if (requiresAuth && !source.config.isAuthenticated) {
+  if (requiresAuth) {
     return 'needs_auth'
-  }
-
-  if (source.config.isAuthenticated) {
-    return 'connected'
   }
 
   // Local sources are always connected
@@ -175,5 +171,6 @@ export function deriveConnectionStatus(source: {
     return 'connected'
   }
 
-  return 'untested'
+  // Sources without auth requirements are considered connected by default.
+  return 'connected'
 }

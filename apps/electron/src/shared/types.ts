@@ -175,6 +175,14 @@ export interface SessionSearchResult {
 }
 
 /**
+ * Git diff line stats for a working directory.
+ */
+export interface GitDiffStats {
+  added: number
+  removed: number
+}
+
+/**
  * Result of sharing or revoking a session
  */
 export interface ShareResult {
@@ -842,6 +850,7 @@ export const IPC_CHANNELS = {
 
   // Git operations
   GET_GIT_BRANCH: 'git:getBranch',
+  GET_GIT_DIFF_STATS: 'git:getDiffStats',
 
   // Git Bash (Windows)
   GITBASH_CHECK: 'gitbash:check',
@@ -1153,6 +1162,7 @@ export interface ElectronAPI {
 
   // Git operations
   getGitBranch(dirPath: string): Promise<string | null>
+  getGitDiffStats(dirPath: string): Promise<GitDiffStats | null>
 
   // Git Bash (Windows)
   checkGitBash(): Promise<GitBashStatus>

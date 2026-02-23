@@ -232,6 +232,7 @@ export {
 
 // Icons
 export {
+  Icon_Git,
   Icon_Folder,
   Icon_Home,
   Icon_Inbox,
