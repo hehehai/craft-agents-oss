@@ -249,7 +249,7 @@ export function CredentialsStep({
   // Determine provider type and description based on selected method
   const providerType = isOpenAiApiKey ? 'openai' : 'anthropic'
   const apiKeyDescription = isOpenAiApiKey
-    ? "Enter your OpenAI API key."
+    ? "Enter your OpenAI API key. Optionally configure a custom OpenAI-compatible endpoint."
     : "Enter your API key. Optionally configure a custom endpoint for OpenRouter, Ollama, or compatible APIs."
 
   return (

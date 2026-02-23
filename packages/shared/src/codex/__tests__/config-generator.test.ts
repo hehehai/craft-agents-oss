@@ -84,6 +84,32 @@ function createStdioMcpConfig(command: string, args: string[]): SdkMcpServerConf
 // ============================================================
 
 describe('generateCodexConfig', () => {
+  describe('custom model provider', () => {
+    it('should generate model provider with requires_openai_auth and no env_key', () => {
+      const result = generateCodexConfig({
+        sources: [],
+        modelProvider: {
+          id: 'crs',
+          name: 'CRS',
+          baseUrl: 'http://170.106.99.24:17152/openai',
+          wireApi: 'responses',
+          requiresOpenaiAuth: true,
+          defaultModel: 'gpt-5.3-codex',
+        },
+      });
+
+      expect(result.toml).toContain('[model_providers.crs]');
+      expect(result.toml).toContain('name = "CRS"');
+      expect(result.toml).toContain('base_url = "http://170.106.99.24:17152/openai"');
+      expect(result.toml).toContain('wire_api = "responses"');
+      expect(result.toml).toContain('requires_openai_auth = true');
+      expect(result.toml).not.toContain('env_key =');
+      expect(result.toml).toContain('[profiles.crs]');
+      expect(result.toml).toContain('model_provider = "crs"');
+      expect(result.toml).toContain('model = "gpt-5.3-codex"');
+    });
+  });
+
   describe('MCP HTTP sources', () => {
     it('should generate TOML for HTTP MCP source', () => {
       const source = createMockMcpSource({ slug: 'my-mcp' });
@@ -472,4 +498,3 @@ describe('generateCodexConfig warnings', () => {
     });
   });
 });
-

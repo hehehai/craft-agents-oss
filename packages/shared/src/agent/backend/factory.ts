@@ -28,6 +28,18 @@ import type { LlmConnectionType } from '../../config/llm-connections.ts';
 // Import validation helpers for provider-auth combinations and codexPath
 import { isValidProviderAuthCombination, validateCodexPath } from '../../config/llm-connections.ts';
 
+function isCodexApiConnection(connection: LlmConnection): boolean {
+  return connection.slug.replace(/-\d+$/, '') === 'codex-api';
+}
+
+function normalizeCodexApiModelId(connection: LlmConnection, model: string | undefined): string | undefined {
+  if (!model) return model;
+  if (connection.providerType === 'openai_compat' && isCodexApiConnection(connection) && model.startsWith('openai/')) {
+    return model.slice('openai/'.length);
+  }
+  return model;
+}
+
 /**
  * Detect provider from stored auth type.
  *
@@ -256,8 +268,13 @@ export function createConfigFromConnection(
     providerType,
     authType: connection.authType,
     connectionSlug: connection.slug,
+    codexModelProviderId: (
+      providerType === 'openai_compat' &&
+      !!connection.baseUrl
+    ) ? connection.slug : undefined,
     // Use connection's default model if no model specified in baseConfig
-    model: baseConfig.model || connection.defaultModel,
+    model: normalizeCodexApiModelId(connection, baseConfig.model || connection.defaultModel),
+    miniModel: normalizeCodexApiModelId(connection, baseConfig.miniModel),
   };
 }
 
@@ -297,4 +314,3 @@ export function createBackendFromConnection(
   const config = createConfigFromConnection(connection, baseConfig);
   return createBackend(config);
 }
-

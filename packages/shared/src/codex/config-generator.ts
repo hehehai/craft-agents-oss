@@ -36,9 +36,11 @@ export interface ModelProviderConfig {
   /** Base URL for the API */
   baseUrl: string;
   /** Environment variable name for API key */
-  envKey: string;
+  envKey?: string;
   /** Wire API format (usually 'chat' for OpenAI-compatible) */
   wireApi?: 'chat' | 'completions' | 'responses';
+  /** Provider should use currently logged-in OpenAI auth from Codex app-server */
+  requiresOpenaiAuth?: boolean;
   /** Default model to use with this provider */
   defaultModel?: string;
 }
@@ -387,9 +389,14 @@ function generateModelProviderSection(provider: ModelProviderConfig): string {
   lines.push(`[model_providers.${provider.id}]`);
   lines.push(`name = ${formatTomlValue(provider.name)}`);
   lines.push(`base_url = ${formatTomlValue(provider.baseUrl)}`);
-  lines.push(`env_key = ${formatTomlValue(provider.envKey)}`);
+  if (provider.envKey) {
+    lines.push(`env_key = ${formatTomlValue(provider.envKey)}`);
+  }
   if (provider.wireApi) {
     lines.push(`wire_api = ${formatTomlValue(provider.wireApi)}`);
+  }
+  if (provider.requiresOpenaiAuth) {
+    lines.push(`requires_openai_auth = true`);
   }
   lines.push('');
 

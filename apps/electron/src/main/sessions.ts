@@ -21,7 +21,7 @@ import {
   getCredentialCachePath,
   type CredentialCacheEntry,
 } from '@craft-agent/shared/codex'
-import { getLlmConnection, getDefaultLlmConnection } from '@craft-agent/shared/config'
+import { getLlmConnection, getDefaultLlmConnection, type LlmConnection } from '@craft-agent/shared/config'
 import { sessionLog, isDebugMode, getLogFilePath } from './logger'
 import { InitGate } from './init-gate'
 import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
@@ -128,6 +128,19 @@ export const AGENT_FLAGS = {
   defaultModesEnabled: true,
 } as const
 
+function isCodexApiConnection(connection?: LlmConnection | null): boolean {
+  if (!connection) return false
+  return connection.slug.replace(/-\d+$/, '') === 'codex-api'
+}
+
+function normalizeCodexApiModelId(connection: LlmConnection | null | undefined, model: string | undefined): string | undefined {
+  if (!model) return model
+  if (connection?.providerType === 'openai_compat' && isCodexApiConnection(connection) && model.startsWith('openai/')) {
+    return model.slice('openai/'.length)
+  }
+  return model
+}
+
 /**
  * Build MCP and API servers from sources using the new unified modules.
  * Handles credential loading and server building in one step.
@@ -223,7 +236,7 @@ async function refreshOAuthTokensIfNeeded(
   sources: LoadedSource[],
   sessionPath: string,
   tokenRefreshManager: TokenRefreshManager,
-  options?: { sessionId?: string; workspaceRootPath?: string }
+  options?: { sessionId?: string; workspaceRootPath?: string; connection?: LlmConnection | null }
 ): Promise<OAuthTokenRefreshResult> {
   sessionLog.debug('[OAuth] Checking if any OAuth tokens need refresh')
 
@@ -264,7 +277,7 @@ async function refreshOAuthTokensIfNeeded(
     if (agent instanceof CodexBackend && options?.sessionId && options?.workspaceRootPath) {
       await regenCodexConfigAndReconnect(
         agent, sessionPath, enabledSources, mcpServers,
-        options.sessionId, options.workspaceRootPath, 'token refresh'
+        options.sessionId, options.workspaceRootPath, 'token refresh', options.connection
       )
     }
 
@@ -319,7 +332,8 @@ async function setupCodexSessionConfig(
   sources: LoadedSource[],
   mcpServerConfigs: Record<string, import('@craft-agent/shared/agent/backend').SdkMcpServerConfig>,
   sessionId?: string,
-  workspaceRootPath?: string
+  workspaceRootPath?: string,
+  connection?: LlmConnection | null
 ): Promise<string> {
   const codexHome = join(sessionPath, '.codex-home')
 
@@ -363,6 +377,18 @@ async function setupCodexSessionConfig(
     ? join(workspaceRootPath, 'sessions', sessionId, 'plans')
     : undefined
 
+  const modelProvider = (
+    connection?.providerType === 'openai_compat' &&
+    !!connection.baseUrl
+  ) ? {
+    id: connection.slug,
+    name: connection.name,
+    baseUrl: connection.baseUrl,
+    wireApi: 'responses' as const,
+    requiresOpenaiAuth: true,
+    defaultModel: connection.defaultModel,
+  } : undefined
+
   const configResult = generateCodexConfig({
     sources,
     mcpServerConfigs,
@@ -382,6 +408,7 @@ async function setupCodexSessionConfig(
     // Use bundled Bun in packaged app, system 'bun' in development
     // IMPORTANT: process.execPath returns the Electron binary in packaged apps, which cannot run JS files
     nodePath: getBundledBunPath() ?? 'bun',
+    modelProvider,
   })
 
   // Write config.toml
@@ -431,10 +458,11 @@ async function regenCodexConfigAndReconnect(
   mcpServers: Record<string, import('@craft-agent/shared/agent/backend').SdkMcpServerConfig>,
   sessionId: string,
   workspaceRootPath: string,
-  context: string
+  context: string,
+  connection?: LlmConnection | null
 ): Promise<void> {
   try {
-    await setupCodexSessionConfig(sessionPath, enabledSources, mcpServers, sessionId, workspaceRootPath)
+    await setupCodexSessionConfig(sessionPath, enabledSources, mcpServers, sessionId, workspaceRootPath, connection)
     await agent.queueReconnect()
     sessionLog.info(`Codex config regenerated after ${context} for session ${sessionId}`)
   } catch (err) {
@@ -1281,9 +1309,14 @@ export class SessionManager {
 
     // For Codex backend, regenerate config.toml and reconnect
     if (managed.agent instanceof CodexBackend) {
+      const workspaceConfig = loadWorkspaceConfig(workspaceRootPath)
+      const connection = resolveSessionConnection(
+        managed.llmConnection,
+        workspaceConfig?.defaults?.defaultLlmConnection
+      )
       await regenCodexConfigAndReconnect(
         managed.agent, sessionPath, enabledSources, mcpServers,
-        managed.id, workspaceRootPath, 'source reload'
+        managed.id, workspaceRootPath, 'source reload', connection
       )
     }
 
@@ -1853,6 +1886,11 @@ export class SessionManager {
     // For Codex backend: regenerate config.toml with new credentials and reconnect
     if (result.success && result.sourceSlug && managed.agent instanceof CodexBackend) {
       const workspaceRootPath = managed.workspace.rootPath
+      const workspaceConfig = loadWorkspaceConfig(workspaceRootPath)
+      const connection = resolveSessionConnection(
+        managed.llmConnection,
+        workspaceConfig?.defaults?.defaultLlmConnection
+      )
       const sessionPath = getSessionStoragePath(workspaceRootPath, managed.id)
       const enabledSlugs = managed.enabledSourceSlugs || []
       const allSources = loadAllSources(workspaceRootPath)
@@ -1864,7 +1902,7 @@ export class SessionManager {
       )
       await regenCodexConfigAndReconnect(
         managed.agent, sessionPath, enabledSources, mcpServers,
-        managed.id, workspaceRootPath, 'source auth'
+        managed.id, workspaceRootPath, 'source auth', connection
       )
     }
 
@@ -2176,11 +2214,12 @@ export class SessionManager {
 
     // Model priority: options.model > storedSession.model > workspace default
     let resolvedModel = options?.model || storedSession.model || defaultModel
+    resolvedModel = normalizeCodexApiModelId(sessionConnection, resolvedModel)
 
     // Ensure model matches the connection's provider (e.g. don't send Claude model to Codex)
     // Fall back to connection's default model instead of hardcoded constants
     if (resolvedModel && sessionProvider === 'openai' && !isCodexModel(resolvedModel)) {
-      resolvedModel = sessionConnection?.defaultModel ?? resolvedModel
+      resolvedModel = normalizeCodexApiModelId(sessionConnection, sessionConnection?.defaultModel) ?? resolvedModel
     } else if (resolvedModel && sessionProvider === 'anthropic' && isCodexModel(resolvedModel)) {
       resolvedModel = sessionConnection?.defaultModel ?? resolvedModel
     }
@@ -2501,8 +2540,10 @@ export class SessionManager {
         // Codex backend - uses app-server protocol
         // Model from session > connection default (connection always has defaultModel via backfill)
         // Safety: ensure the resolved model is actually a Codex model (not a Claude model from stale session data)
-        const rawCodexModel = managed.model || connection?.defaultModel
-        const codexModel = (rawCodexModel && isCodexModel(rawCodexModel)) ? rawCodexModel : (connection?.defaultModel || DEFAULT_CODEX_MODEL)
+        const normalizedSessionModel = normalizeCodexApiModelId(connection, managed.model)
+        const normalizedConnectionDefaultModel = normalizeCodexApiModelId(connection, connection?.defaultModel)
+        const rawCodexModel = normalizedSessionModel || normalizedConnectionDefaultModel
+        const codexModel = (rawCodexModel && isCodexModel(rawCodexModel)) ? rawCodexModel : (normalizedConnectionDefaultModel || DEFAULT_CODEX_MODEL)
 
         // Set up per-session Codex configuration (MCP servers, etc.)
         // This creates .codex-home/config.toml in the session folder
@@ -2513,16 +2554,29 @@ export class SessionManager {
           enabledSlugs.includes(s.config.slug) && isSourceUsable(s)
         )
         const { mcpServers } = await buildServersFromSources(enabledSources, sessionPath, managed.tokenRefreshManager)
-        const codexHome = await setupCodexSessionConfig(sessionPath, enabledSources, mcpServers, managed.id, managed.workspace.rootPath)
+        const codexHome = await setupCodexSessionConfig(
+          sessionPath,
+          enabledSources,
+          mcpServers,
+          managed.id,
+          managed.workspace.rootPath,
+          connection
+        )
 
         managed.agent = new CodexBackend({
           provider: 'openai',
           authType: authType || 'oauth',
+          providerType: connection?.providerType,
           workspace: managed.workspace,
           model: codexModel,
-          miniModel: connection ? (getMiniModel(connection) ?? connection.defaultModel) : undefined,
+          miniModel: connection ? (normalizeCodexApiModelId(connection, getMiniModel(connection) ?? connection.defaultModel) ?? undefined) : undefined,
           thinkingLevel: managed.thinkingLevel,
           codexHome, // Per-session config directory
+          connectionSlug: connection?.slug,
+          codexModelProviderId: (
+            connection?.providerType === 'openai_compat' &&
+            !!connection.baseUrl
+          ) ? connection.slug : undefined,
           session: {
             id: managed.id,
             workspaceRootPath: managed.workspace.rootPath,
@@ -3033,9 +3087,14 @@ export class SessionManager {
         // For Codex backend, regenerate config.toml and reconnect to pick up new sources
         // (Codex reads MCP config from file at startup, unlike Claude which has runtime injection)
         if (managed.agent instanceof CodexBackend) {
+          const workspaceConfig = loadWorkspaceConfig(workspaceRootPath)
+          const connection = resolveSessionConnection(
+            managed.llmConnection,
+            workspaceConfig?.defaults?.defaultLlmConnection
+          )
           await regenCodexConfigAndReconnect(
             managed.agent, sessionPath, allEnabledSources, mcpServers,
-            managed.id, workspaceRootPath, 'source enable'
+            managed.id, workspaceRootPath, 'source enable', connection
           )
         }
 
@@ -3466,9 +3525,14 @@ export class SessionManager {
       // For Codex backend, regenerate config.toml and reconnect to pick up new sources
       // (Codex reads MCP config from file at startup, unlike Claude which has runtime injection)
       if (managed.agent instanceof CodexBackend) {
+        const workspaceConfig = loadWorkspaceConfig(workspaceRootPath)
+        const connection = resolveSessionConnection(
+          managed.llmConnection,
+          workspaceConfig?.defaults?.defaultLlmConnection
+        )
         await regenCodexConfigAndReconnect(
           managed.agent, sessionPath, sources, mcpServers,
-          managed.id, workspaceRootPath, 'source config change'
+          managed.id, workspaceRootPath, 'source config change', connection
         )
       }
 
@@ -4164,12 +4228,17 @@ export class SessionManager {
       // This ensures tokens are fresh BEFORE the first API call, avoiding mid-call auth failures.
       // Handles both MCP OAuth (Linear, Notion) and API OAuth (Gmail, Slack, Microsoft).
       if (managed.tokenRefreshManager) {
+        const workspaceConfig = loadWorkspaceConfig(workspaceRootPath)
+        const connection = resolveSessionConnection(
+          managed.llmConnection,
+          workspaceConfig?.defaults?.defaultLlmConnection
+        )
         const refreshResult = await refreshOAuthTokensIfNeeded(
           agent,
           sources,
           sessionPath,
           managed.tokenRefreshManager,
-          { sessionId, workspaceRootPath }
+          { sessionId, workspaceRootPath, connection }
         )
         if (refreshResult.failedSources.length > 0) {
           sessionLog.warn('[OAuth] Some sources failed token refresh:', refreshResult.failedSources.map(f => f.slug))

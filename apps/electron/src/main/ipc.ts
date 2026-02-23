@@ -122,7 +122,7 @@ function createBuiltInConnection(slug: string, baseUrl?: string | null): LlmConn
     name = `${name} ${suffixMatch[1]}`
   }
 
-  return {
+  const connection: LlmConnection = {
     slug,
     name,
     providerType,
@@ -131,6 +131,176 @@ function createBuiltInConnection(slug: string, baseUrl?: string | null): LlmConn
     defaultModel: getDefaultModelForConnection(providerType),
     createdAt: Date.now(),
   }
+
+  // Codex API-key connections use openai_compat transport but should default to
+  // native Codex model IDs (without provider prefix).
+  if (baseSlug === 'codex-api') {
+    connection.models = ['gpt-5.3-codex', 'gpt-5.1-codex-mini']
+    connection.defaultModel = 'gpt-5.3-codex'
+  }
+
+  return connection
+}
+
+function isCodexApiSlug(slug: string): boolean {
+  return slug.replace(/-\d+$/, '') === 'codex-api'
+}
+
+function stripOpenAiModelPrefix(model: string): string {
+  return model.startsWith('openai/') ? model.slice('openai/'.length) : model
+}
+
+/**
+ * Parse error response body from OpenAI-compatible endpoint.
+ */
+async function parseOpenAiErrorMessage(response: Response): Promise<string> {
+  try {
+    const errorData = await response.json() as {
+      error?: { message?: unknown };
+      message?: unknown;
+      detail?: unknown;
+    }
+
+    if (typeof errorData?.error?.message === 'string' && errorData.error.message.trim()) {
+      return errorData.error.message
+    }
+    if (typeof errorData?.message === 'string' && errorData.message.trim()) {
+      return errorData.message
+    }
+    if (typeof errorData?.detail === 'string' && errorData.detail.trim()) {
+      return errorData.detail
+    }
+
+    if (Array.isArray(errorData?.detail) && errorData.detail.length > 0) {
+      const first = errorData.detail[0]
+      if (typeof first === 'string' && first.trim()) return first
+      if (typeof first === 'object' && first !== null && 'msg' in first) {
+        const msg = (first as { msg?: unknown }).msg
+        if (typeof msg === 'string' && msg.trim()) return msg
+      }
+    }
+
+    return `API error: ${response.status}`
+  } catch {
+    return `API error: ${response.status} ${response.statusText}`
+  }
+}
+
+/**
+ * Validate OpenAI-compatible endpoint connectivity.
+ *
+ * Strategy:
+ * 1) Try model listing endpoint(s): /v1/models, then /models for custom base URLs.
+ * 2) If all model endpoints are 404 on custom URLs, fall back to Responses API probe:
+ *    /v1/responses then /responses (requires a model id).
+ */
+async function validateOpenAiCompatibleEndpoint(
+  apiKey: string,
+  baseUrl?: string,
+  fallbackModel?: string
+): Promise<{ success: boolean; modelIds?: Set<string>; error?: string }> {
+  const effectiveBaseUrl = (baseUrl || 'https://api.openai.com').replace(/\/$/, '')
+  const modelUrls = baseUrl
+    ? [`${effectiveBaseUrl}/v1/models`, `${effectiveBaseUrl}/models`]
+    : [`${effectiveBaseUrl}/v1/models`]
+
+  let saw404OnModels = false
+
+  for (const modelsUrl of modelUrls) {
+    ipcLog.info(`[validateOpenAiCompatibleEndpoint] Testing models endpoint: ${modelsUrl}`)
+    const response = await fetch(modelsUrl, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+    })
+
+    if (response.ok) {
+      try {
+        const payload = await response.json() as { data?: Array<{ id?: string }> }
+        const modelIds: Set<string> = new Set(
+          (payload.data ?? [])
+            .map((item: { id?: string }) => item.id)
+            .filter((id: string | undefined): id is string => typeof id === 'string' && id.length > 0)
+        )
+        return { success: true, modelIds }
+      } catch {
+        // Some proxies may return non-standard payloads; connectivity/auth still validated.
+        return { success: true }
+      }
+    }
+
+    if (response.status === 404 && baseUrl) {
+      saw404OnModels = true
+      continue
+    }
+    if (response.status === 401) return { success: false, error: 'Invalid API key' }
+    if (response.status === 403) return { success: false, error: 'API key does not have permission to access this resource' }
+    if (response.status === 429) return { success: false, error: 'Rate limit exceeded. Please try again.' }
+
+    return { success: false, error: await parseOpenAiErrorMessage(response) }
+  }
+
+  // If custom endpoint doesn't expose model listing, probe Responses API instead.
+  if (baseUrl && saw404OnModels) {
+    const model = fallbackModel?.trim()
+    if (!model) {
+      return { success: false, error: 'API endpoint not found. Check the base URL and provide a model for validation.' }
+    }
+
+    const responseUrls = [`${effectiveBaseUrl}/v1/responses`, `${effectiveBaseUrl}/responses`]
+    for (const url of responseUrls) {
+      ipcLog.info(`[validateOpenAiCompatibleEndpoint] Testing responses endpoint: ${url}`)
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          input: [{
+            role: 'user',
+            content: [{ type: 'input_text', text: 'ping' }],
+          }],
+          stream: true,
+          max_output_tokens: 1,
+        }),
+      })
+
+      if (response.ok) return { success: true }
+      if (response.status === 404) continue
+      if (response.status === 401) return { success: false, error: 'Invalid API key' }
+      if (response.status === 403) return { success: false, error: 'API key does not have permission to access this resource' }
+      if (response.status === 429) return { success: false, error: 'Rate limit exceeded. Please try again.' }
+
+      const errMsg = await parseOpenAiErrorMessage(response)
+      const lowerErr = errMsg.toLowerCase()
+      if (lowerErr.includes('model') && (lowerErr.includes('not found') || lowerErr.includes('invalid'))) {
+        return { success: false, error: `Model "${model}" not found. Check the model name and try again.` }
+      }
+      if (response.status === 400) {
+        // Some OpenAI-compatible proxies validate payload shape strictly and return 400
+        // for probe payload differences (e.g. input schema, streaming flags).
+        // Treat these as connectivity success because endpoint/auth routing is functional.
+        const looksLikePayloadShapeError =
+          lowerErr.includes('input must be a list') ||
+          lowerErr.includes('stream must be set to true') ||
+          lowerErr.includes('invalid request') ||
+          lowerErr.includes('missing required') ||
+          lowerErr.includes('invalid type') ||
+          lowerErr.includes('must be')
+
+        if (looksLikePayloadShapeError) {
+          return { success: true }
+        }
+      }
+      return { success: false, error: errMsg }
+    }
+  }
+
+  return { success: false, error: 'API endpoint not found. Check the base URL.' }
 }
 
 /**
@@ -263,6 +433,14 @@ async function fetchAndStoreCodexModels(slug: string): Promise<void> {
   const connection = getLlmConnection(slug)
   if (!connection) throw new Error(`Connection not found: ${slug}`)
 
+  // For custom OpenAI-compatible endpoints, keep user-provided model list.
+  // model/list runs against Codex default auth/provider context and cannot
+  // reliably discover third-party endpoint models.
+  if (connection.providerType === 'openai_compat' && connection.baseUrl) {
+    ipcLog.info(`Skipping Codex model fetch for custom endpoint connection: ${slug}`)
+    return
+  }
+
   const codexPath = await getCodexPath()
   const client = new AppServerClient({
     codexPath,
@@ -289,7 +467,7 @@ async function fetchAndStoreCodexModels(slug: string): Promise<void> {
           accessToken: oauth.accessToken,
         })
       }
-    } else if (connection.authType === 'api_key') {
+    } else if (connection.authType === 'api_key' || connection.authType === 'api_key_with_endpoint') {
       const apiKey = await manager.getLlmApiKey(slug)
       if (apiKey) {
         await client.accountLoginWithApiKey(apiKey)
@@ -1631,6 +1809,32 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
         ...updates,
       }
 
+      // Backward compatibility:
+      // Older Codex API-key presets used OpenRouter-style model IDs
+      // like "openai/gpt-5.2-codex". Codex expects native IDs such as
+      // "gpt-5.3-codex" for this connection type.
+      if (isCodexApiSlug(setup.slug) && pendingConnection.providerType === 'openai_compat') {
+        let modelsChanged = false
+        const normalizedModels = (pendingConnection.models ?? []).map((entry) => {
+          if (typeof entry !== 'string') return entry
+          const normalized = stripOpenAiModelPrefix(entry.trim())
+          if (normalized !== entry) modelsChanged = true
+          return normalized
+        })
+        if (modelsChanged) {
+          pendingConnection.models = normalizedModels
+          updates.models = normalizedModels
+        }
+
+        if (pendingConnection.defaultModel) {
+          const normalizedDefaultModel = stripOpenAiModelPrefix(pendingConnection.defaultModel.trim())
+          if (normalizedDefaultModel !== pendingConnection.defaultModel) {
+            pendingConnection.defaultModel = normalizedDefaultModel
+            updates.defaultModel = normalizedDefaultModel
+          }
+        }
+      }
+
       if (updates.models && updates.models.length > 0) {
         if (pendingConnection.defaultModel && !updates.models.includes(pendingConnection.defaultModel)) {
           return { success: false, error: `Default model "${pendingConnection.defaultModel}" is not in the provided model list.` }
@@ -1853,65 +2057,24 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
     }
 
     try {
-      // Test against /v1/models endpoint - validates auth without consuming tokens
-      // For OpenAI direct: https://api.openai.com/v1/models
-      // For OpenRouter/Vercel: use their respective base URLs
-      const effectiveBaseUrl = trimmedUrl || 'https://api.openai.com'
-      const modelsUrl = `${effectiveBaseUrl.replace(/\/$/, '')}/v1/models`
+      const validation = await validateOpenAiCompatibleEndpoint(
+        trimmedKey,
+        trimmedUrl,
+        normalizedModels[0]
+      )
+      if (!validation.success) {
+        return { success: false, error: validation.error }
+      }
 
-      ipcLog.info(`[testOpenAiConnection] Testing: ${modelsUrl}`)
-
-      const response = await fetch(modelsUrl, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${trimmedKey}`,
-          'Content-Type': 'application/json',
-        },
-      })
-
-      if (response.ok) {
-        if (normalizedModels.length > 0) {
-          try {
-            const payload = await response.json()
-            const available = new Set((payload?.data ?? []).map((item: { id?: string }) => item.id).filter(Boolean))
-            const missing = normalizedModels.filter(model => !available.has(model))
-            if (missing.length > 0) {
-              return { success: false, error: `Model "${missing[0]}" not found. Check the model name and try again.` }
-            }
-          } catch (parseError) {
-            const msg = parseError instanceof Error ? parseError.message : String(parseError)
-            return { success: false, error: `Failed to parse model list: ${msg.slice(0, 200)}` }
-          }
+      if (normalizedModels.length > 0 && validation.modelIds) {
+        const missing = normalizedModels.filter(model => !validation.modelIds!.has(model))
+        if (missing.length > 0) {
+          return { success: false, error: `Model "${missing[0]}" not found. Check the model name and try again.` }
         }
-        ipcLog.info('[testOpenAiConnection] Success')
-        return { success: true }
       }
 
-      // Handle specific error codes
-      if (response.status === 401) {
-        return { success: false, error: 'Invalid API key' }
-      }
-
-      if (response.status === 403) {
-        return { success: false, error: 'API key does not have permission to access this resource' }
-      }
-
-      if (response.status === 404) {
-        return { success: false, error: 'API endpoint not found. Check the base URL.' }
-      }
-
-      if (response.status === 429) {
-        return { success: false, error: 'Rate limit exceeded. Please try again.' }
-      }
-
-      // Try to extract error message from response
-      try {
-        const errorData = await response.json()
-        const errorMessage = errorData?.error?.message || `API error: ${response.status}`
-        return { success: false, error: errorMessage }
-      } catch {
-        return { success: false, error: `API error: ${response.status} ${response.statusText}` }
-      }
+      ipcLog.info('[testOpenAiConnection] Success')
+      return { success: true }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
       const lowerMsg = msg.toLowerCase()
@@ -2231,63 +2394,32 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
           return { success: false, error: `Default model "${connection.defaultModel}" is not in the configured model list.` }
         }
 
-        const effectiveBaseUrl = (connection.baseUrl || 'https://api.openai.com').replace(/\/$/, '')
-        const modelsUrl = `${effectiveBaseUrl}/v1/models`
-        const response = await fetch(modelsUrl, {
-          method: 'GET',
-          headers: {
-            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-            'Content-Type': 'application/json',
-          },
-        })
+        const validation = await validateOpenAiCompatibleEndpoint(
+          apiKey || '',
+          connection.baseUrl,
+          connection.defaultModel || modelList[0]
+        )
+        if (!validation.success) {
+          return { success: false, error: validation.error }
+        }
 
-        if (response.ok) {
-          if (modelList.length > 0) {
-            try {
-              const payload = await response.json()
-              const available = new Set((payload?.data ?? []).map((item: { id?: string }) => item.id).filter(Boolean))
-              const missing = modelList.filter(model => !available.has(model))
-              if (missing.length > 0) {
-                return { success: false, error: `Model "${missing[0]}" not found. Check the model name and try again.` }
-              }
-            } catch (parseError) {
-              const msg = parseError instanceof Error ? parseError.message : String(parseError)
-              return { success: false, error: `Failed to parse model list: ${msg.slice(0, 200)}` }
-            }
+        if (modelList.length > 0 && validation.modelIds) {
+          const missing = modelList.filter(model => !validation.modelIds!.has(model))
+          if (missing.length > 0) {
+            return { success: false, error: `Model "${missing[0]}" not found. Check the model name and try again.` }
           }
-
-          // Fetch available models from Codex app-server (non-blocking — keeps hardcoded fallback on failure)
-          if (connection.providerType === 'openai') {
-            fetchAndStoreCodexModels(slug).catch(err => {
-              ipcLog.warn(`Codex model fetch failed during API key validation: ${err instanceof Error ? err.message : err}`)
-            })
-          }
-
-          ipcLog.info(`LLM connection validated: ${slug}`)
-          touchLlmConnection(slug)
-          return { success: true }
         }
 
-        if (response.status === 401) {
-          return { success: false, error: 'Invalid API key' }
-        }
-        if (response.status === 403) {
-          return { success: false, error: 'API key does not have permission to access this resource' }
-        }
-        if (response.status === 404) {
-          return { success: false, error: 'API endpoint not found. Check the base URL.' }
-        }
-        if (response.status === 429) {
-          return { success: false, error: 'Rate limit exceeded. Please try again.' }
+        // Fetch available models from Codex app-server (non-blocking — keeps hardcoded fallback on failure)
+        if (connection.providerType === 'openai') {
+          fetchAndStoreCodexModels(slug).catch(err => {
+            ipcLog.warn(`Codex model fetch failed during API key validation: ${err instanceof Error ? err.message : err}`)
+          })
         }
 
-        try {
-          const errorData = await response.json()
-          const errorMessage = errorData?.error?.message || `API error: ${response.status}`
-          return { success: false, error: errorMessage }
-        } catch {
-          return { success: false, error: `API error: ${response.status} ${response.statusText}` }
-        }
+        ipcLog.info(`LLM connection validated: ${slug}`)
+        touchLlmConnection(slug)
+        return { success: true }
       }
 
       // ========================================

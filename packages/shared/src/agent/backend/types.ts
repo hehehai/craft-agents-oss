@@ -411,6 +411,13 @@ export interface BackendConfig {
    */
   connectionSlug?: string;
 
+  /**
+   * Codex model provider id for custom OpenAI-compatible endpoints.
+   * When set, Codex thread start/resume uses this provider instead of default OpenAI.
+   * Typically matches the connection slug used in generated `.codex-home/config.toml`.
+   */
+  codexModelProviderId?: string;
+
   /** Workspace-level hook system for user-defined SDK hooks (hooks.json) */
   hookSystem?: HookSystem;
 

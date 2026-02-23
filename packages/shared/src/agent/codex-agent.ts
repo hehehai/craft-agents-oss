@@ -265,6 +265,14 @@ export class CodexAgent extends BaseAgent {
     return slug;
   }
 
+  /**
+   * Resolve Codex model provider id for custom OpenAI-compatible endpoints.
+   * Null means "use Codex default provider".
+   */
+  private get threadModelProvider(): string | null {
+    return this.config.codexModelProviderId ?? null;
+  }
+
   constructor(config: BackendConfig) {
     // Get context window from model definitions for base class
     const modelDef = getModelById(config.model!);
@@ -1603,6 +1611,7 @@ export class CodexAgent extends BaseAgent {
     this._startingEphemeralThread = true;
     const response = await client.threadStart({
       model,
+      modelProvider: this.threadModelProvider,
       ephemeral: true,
       approvalPolicy: 'never',
       sandbox: 'danger-full-access',
@@ -1762,7 +1771,7 @@ export class CodexAgent extends BaseAgent {
             path: null,
             // Mini agent: use last model from connection for resumed threads too
             model: miniConfig.enabled ? resolveCodexModelId(this.config.miniModel ?? DEFAULT_CODEX_MODEL, this.config.authType) : null,
-            modelProvider: null,
+            modelProvider: this.threadModelProvider,
             cwd: null,
             approvalPolicy: null,
             sandbox: null,
@@ -1801,6 +1810,7 @@ export class CodexAgent extends BaseAgent {
 
           const response = await client.threadStart({
             model,
+            modelProvider: this.threadModelProvider,
             cwd: this.workingDirectory,
             approvalPolicy: this.getApprovalPolicy(permissionMode),
             sandbox: this.getSandboxMode(permissionMode),
@@ -1824,6 +1834,7 @@ export class CodexAgent extends BaseAgent {
         // Start new thread
         const response = await client.threadStart({
           model,
+          modelProvider: this.threadModelProvider,
           cwd: this.workingDirectory,
           approvalPolicy: this.getApprovalPolicy(permissionMode),
           sandbox: this.getSandboxMode(permissionMode),
@@ -2323,7 +2334,7 @@ export class CodexAgent extends BaseAgent {
           history: null,
           path: null,
           model: null,
-          modelProvider: null,
+          modelProvider: this.threadModelProvider,
           cwd: null,
           approvalPolicy: null,
           sandbox: null,
@@ -2558,6 +2569,7 @@ export class CodexAgent extends BaseAgent {
     this._startingEphemeralThread = true;
     const threadResponse = await client.threadStart({
       model,
+      modelProvider: this.threadModelProvider,
       cwd: this.workingDirectory,
       baseInstructions: request.systemPrompt ?? 'Reply with ONLY the requested text. No explanation.',
       ephemeral: true,
@@ -2648,6 +2660,7 @@ export class CodexAgent extends BaseAgent {
       this._startingEphemeralThread = true;
       const threadResponse = await client.threadStart({
         model,
+        modelProvider: this.threadModelProvider,
         cwd: this.workingDirectory,
         baseInstructions: '', // Empty - no system prompt
         ephemeral: true, // Don't persist this thread
