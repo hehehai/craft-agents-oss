@@ -1144,6 +1144,33 @@ export default function App() {
     }
   }, [onboarding, initializeSessions])
 
+  const applyWorkspaceSwitchLocalState = useCallback((workspaceId: string) => {
+    // 1. Update React state to trigger re-renders
+    setWindowWorkspaceId(workspaceId)
+
+    // 2. Clear selected session from previous workspace
+    setSession({ selected: null })
+
+    // 3. Clear pending permissions/credentials
+    setPendingPermissions(new Map())
+    setPendingCredentials(new Map())
+
+    // 4. Clear session options and drafts from previous workspace
+    setSessionOptions(new Map())
+    sessionDraftsRef.current.clear()
+
+    // 5. Reset sources and skills atoms to prevent stale data flash
+    store.set(sourcesAtom, [])
+    store.set(skillsAtom, [])
+
+    // 6. Clear session atoms before navigation
+    store.set(sessionMetaMapAtom, new Map())
+    store.set(sessionIdsAtom, [])
+
+    // 7. Navigate to allSessions in a clean state
+    navigate(routes.view.allSessions())
+  }, [setSession, store, navigate])
+
   // Handle workspace selection
   // - Default: switch workspace in same window (in-window switching)
   // - With openInNewWindow=true: open in new window (or focus existing)
@@ -1156,50 +1183,20 @@ export default function App() {
       window.electronAPI.openWorkspace(workspaceId)
     } else {
       // Switch workspace in current window
-      // 1. Update the main process's window-workspace mapping
       await window.electronAPI.switchWorkspace(workspaceId)
-
-      // 2. Update React state to trigger re-renders
-      setWindowWorkspaceId(workspaceId)
-
-      // 3. Clear selected session - the old session belongs to the previous workspace
-      // and should not remain selected when switching to a new workspace.
-      // This prevents showing stale session data from the wrong workspace.
-      setSession({ selected: null })
-
-      // 4. Clear pending permissions/credentials (not relevant to new workspace)
-      setPendingPermissions(new Map())
-      setPendingCredentials(new Map())
-
-      // 5. Clear session options from previous workspace
-      // (session IDs are unique UUIDs, but clearing prevents unbounded memory growth
-      // and ensures no stale state from old workspace persists)
-      setSessionOptions(new Map())
-
-      // 6. Clear message drafts from previous workspace
-      // (prevents memory growth on repeated workspace switches)
-      sessionDraftsRef.current.clear()
-
-      // 7. Reset sources and skills atoms to empty
-      // (prevents stale data flash during workspace switch - AppShell will reload)
-      store.set(sourcesAtom, [])
-      store.set(skillsAtom, [])
-
-      // 8. Clear session atoms BEFORE navigating
-      // This prevents applyNavigationState from auto-selecting a session from the old workspace.
-      // Without this, getFirstSessionId() would return a session ID from the previous workspace,
-      // causing the detail panel to show a stale chat until sessions reload.
-      store.set(sessionMetaMapAtom, new Map())
-      store.set(sessionIdsAtom, [])
-
-      // 9. Navigate to allSessions view without a specific session selected
-      // This ensures the UI is in a clean state for the new workspace
-      navigate(routes.view.allSessions())
-
-      // Note: Sessions and theme will reload automatically due to windowWorkspaceId dependency
-      // in useEffect hooks
+      applyWorkspaceSwitchLocalState(workspaceId)
     }
-  }, [windowWorkspaceId, setSession, store])
+  }, [windowWorkspaceId, applyWorkspaceSwitchLocalState])
+
+  // Workspace can be reassigned by main process (e.g. when current workspace is deleted).
+  useEffect(() => {
+    const cleanup = window.electronAPI.onWorkspaceReassigned((workspaceId: string) => {
+      applyWorkspaceSwitchLocalState(workspaceId)
+      window.electronAPI.getWorkspaces().then(setWorkspaces)
+      refreshLlmConnections()
+    })
+    return () => cleanup()
+  }, [applyWorkspaceSwitchLocalState, refreshLlmConnections])
 
   // Handle workspace refresh (e.g., after icon upload)
   const handleRefreshWorkspaces = useCallback(() => {

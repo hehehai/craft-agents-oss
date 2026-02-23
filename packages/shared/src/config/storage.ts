@@ -617,6 +617,8 @@ export async function removeWorkspace(workspaceId: string): Promise<boolean> {
 
   const index = config.workspaces.findIndex(w => w.id === workspaceId);
   if (index === -1) return false;
+  const removedWorkspace = config.workspaces[index];
+  if (!removedWorkspace) return false;
 
   config.workspaces.splice(index, 1);
 
@@ -635,9 +637,51 @@ export async function removeWorkspace(workspaceId: string): Promise<boolean> {
   const workspaceDataDir = join(WORKSPACES_DIR, workspaceId);
   if (existsSync(workspaceDataDir)) {
     try {
-      rmSync(workspaceDataDir, { recursive: true });
+      rmSync(workspaceDataDir, { recursive: true, force: true });
     } catch (error) {
       console.error(`[storage] Failed to delete workspace data directory: ${workspaceDataDir}`, error);
+    }
+  }
+
+  // Delete workspace-managed artifacts from the workspace root folder.
+  // We intentionally only remove Craft-managed paths, not arbitrary user files.
+  const managedDirs = [
+    'sessions',
+    'sources',
+    'skills',
+    'statuses',
+    'labels',
+    '.claude-plugin',
+  ];
+  for (const dir of managedDirs) {
+    const fullPath = join(removedWorkspace.rootPath, dir);
+    if (!existsSync(fullPath)) continue;
+    try {
+      rmSync(fullPath, { recursive: true, force: true });
+    } catch (error) {
+      console.error(`[storage] Failed to delete workspace directory: ${fullPath}`, error);
+    }
+  }
+
+  const managedFiles = [
+    'config.json',
+    'views.json',
+    'permissions.json',
+    'events.jsonl',
+    'icon.png',
+    'icon.jpg',
+    'icon.jpeg',
+    'icon.svg',
+    'icon.webp',
+    'icon.gif',
+  ];
+  for (const file of managedFiles) {
+    const fullPath = join(removedWorkspace.rootPath, file);
+    if (!existsSync(fullPath)) continue;
+    try {
+      rmSync(fullPath, { force: true });
+    } catch (error) {
+      console.error(`[storage] Failed to delete workspace file: ${fullPath}`, error);
     }
   }
 

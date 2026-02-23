@@ -12,7 +12,7 @@ import { registerOnboardingHandlers } from './onboarding'
 import { IPC_CHANNELS, type FileAttachment, type StoredAttachment, type SendMessageOptions, type LlmConnectionSetup } from '../shared/types'
 import { readFileAttachment, perf, validateImageForClaudeAPI, IMAGE_LIMITS } from '@craft-agent/shared/utils'
 import { safeJsonParse } from '@craft-agent/shared/utils/files'
-import { getPreferencesPath, getSessionDraft, setSessionDraft, deleteSessionDraft, getAllSessionDrafts, getWorkspaceByNameOrId, addWorkspace, setActiveWorkspace, loadStoredConfig, saveConfig, type Workspace, getLlmConnections, getLlmConnection, addLlmConnection, updateLlmConnection, deleteLlmConnection, getDefaultLlmConnection, setDefaultLlmConnection, touchLlmConnection, isCompatProvider, isAnthropicProvider, isOpenAIProvider, isCopilotProvider, getDefaultModelsForConnection, getDefaultModelForConnection, type LlmConnection, type LlmConnectionWithStatus, getGitBashPath, setGitBashPath, clearGitBashPath } from '@craft-agent/shared/config'
+import { getPreferencesPath, getSessionDraft, setSessionDraft, deleteSessionDraft, getAllSessionDrafts, getWorkspaceByNameOrId, addWorkspace, setActiveWorkspace, removeWorkspace, loadStoredConfig, saveConfig, type Workspace, getLlmConnections, getLlmConnection, addLlmConnection, updateLlmConnection, deleteLlmConnection, getDefaultLlmConnection, setDefaultLlmConnection, touchLlmConnection, isCompatProvider, isAnthropicProvider, isOpenAIProvider, isCopilotProvider, getDefaultModelsForConnection, getDefaultModelForConnection, type LlmConnection, type LlmConnectionWithStatus, getGitBashPath, setGitBashPath, clearGitBashPath } from '@craft-agent/shared/config'
 import { getSessionAttachmentsPath, validateSessionId } from '@craft-agent/shared/sessions'
 import { loadWorkspaceSources, getSourcesBySlugs, type LoadedSource } from '@craft-agent/shared/sources'
 import { isValidThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
@@ -668,6 +668,57 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
     setActiveWorkspace(workspace.id)
     ipcLog.info(`Created workspace "${name}" at ${rootPath}`)
     return workspace
+  })
+
+  // Delete a workspace and reassign windows to a fallback workspace
+  ipcMain.handle(IPC_CHANNELS.DELETE_WORKSPACE, async (_event, workspaceId: string): Promise<{ success: boolean; nextWorkspaceId?: string; error?: string }> => {
+    try {
+      const workspaces = sessionManager.getWorkspaces()
+      if (workspaces.length <= 1) {
+        return { success: false, error: 'LAST_WORKSPACE' }
+      }
+
+      const workspace = workspaces.find(w => w.id === workspaceId)
+      if (!workspace) {
+        return { success: false, error: 'NOT_FOUND' }
+      }
+
+      const nextWorkspace = workspaces.find(w => w.id !== workspaceId)
+      if (!nextWorkspace) {
+        return { success: false, error: 'LAST_WORKSPACE' }
+      }
+
+      // Tear down all in-memory session/watcher state for the workspace first.
+      await sessionManager.removeWorkspaceRuntimeState(workspaceId, workspace.rootPath)
+
+      const removed = await removeWorkspace(workspaceId)
+      if (!removed) {
+        return { success: false, error: 'DELETE_FAILED' }
+      }
+
+      // Keep active workspace deterministic.
+      setActiveWorkspace(nextWorkspace.id)
+
+      // Reassign any windows still pointing at the deleted workspace.
+      const windowsToReassign = windowManager.getAllWindows().filter(w => w.workspaceId === workspaceId)
+      for (const managed of windowsToReassign) {
+        const webContentsId = managed.window.webContents.id
+        windowManager.updateWindowWorkspace(webContentsId, nextWorkspace.id)
+        if (!managed.window.isDestroyed() && !managed.window.webContents.isDestroyed()) {
+          managed.window.webContents.send(IPC_CHANNELS.WINDOW_WORKSPACE_REASSIGNED, nextWorkspace.id)
+        }
+      }
+
+      // Ensure watchers are active for the fallback workspace.
+      sessionManager.setupConfigWatcher(nextWorkspace.rootPath, nextWorkspace.id)
+
+      ipcLog.info(`Deleted workspace ${workspaceId}; reassigned ${windowsToReassign.length} windows to ${nextWorkspace.id}`)
+      return { success: true, nextWorkspaceId: nextWorkspace.id }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      ipcLog.error(`Failed to delete workspace ${workspaceId}: ${msg}`)
+      return { success: false, error: msg }
+    }
   })
 
   // Check if a workspace slug already exists (for validation before creation)

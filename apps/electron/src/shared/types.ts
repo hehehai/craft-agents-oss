@@ -588,6 +588,7 @@ export const IPC_CHANNELS = {
   // Workspace management
   GET_WORKSPACES: 'workspaces:get',
   CREATE_WORKSPACE: 'workspaces:create',
+  DELETE_WORKSPACE: 'workspaces:delete',
   CHECK_WORKSPACE_SLUG: 'workspaces:checkSlug',
 
   // Window management
@@ -596,6 +597,8 @@ export const IPC_CHANNELS = {
   OPEN_WORKSPACE: 'window:openWorkspace',
   OPEN_SESSION_IN_NEW_WINDOW: 'window:openSessionInNewWindow',
   SWITCH_WORKSPACE: 'window:switchWorkspace',
+  // main → renderer event: workspace mapping was reassigned externally (e.g. workspace deleted)
+  WINDOW_WORKSPACE_REASSIGNED: 'window:workspaceReassigned',
   CLOSE_WINDOW: 'window:close',
   // Close request events (main → renderer, for intercepting X button / Cmd+W)
   WINDOW_CLOSE_REQUESTED: 'window:closeRequested',
@@ -897,6 +900,7 @@ export interface ElectronAPI {
   // Workspace management
   getWorkspaces(): Promise<Workspace[]>
   createWorkspace(folderPath: string, name: string): Promise<Workspace>
+  deleteWorkspace(workspaceId: string): Promise<{ success: boolean; nextWorkspaceId?: string; error?: string }>
   checkWorkspaceSlug(slug: string): Promise<{ exists: boolean; path: string }>
 
   // Window management
@@ -905,6 +909,7 @@ export interface ElectronAPI {
   openWorkspace(workspaceId: string): Promise<void>
   openSessionInNewWindow(workspaceId: string, sessionId: string): Promise<void>
   switchWorkspace(workspaceId: string): Promise<void>
+  onWorkspaceReassigned(callback: (workspaceId: string) => void): () => void
   closeWindow(): Promise<void>
   confirmCloseWindow(): Promise<void>
   /** Listen for close requests (X button, Cmd+W). Returns cleanup function. */

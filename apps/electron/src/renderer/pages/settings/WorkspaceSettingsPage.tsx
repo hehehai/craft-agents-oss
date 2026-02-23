@@ -22,6 +22,18 @@ import { cn } from '@/lib/utils'
 import { routes } from '@/lib/navigate'
 import { Spinner } from '@craft-agent/ui'
 import { RenameDialog } from '@/components/ui/rename-dialog'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { AlertTriangle } from 'lucide-react'
+import { useRegisterModal } from '@/context/ModalContext'
 import type { PermissionMode, WorkspaceSettings, LoadedSource } from '../../../shared/types'
 import { PERMISSION_MODE_CONFIG } from '@craft-agent/shared/agent/mode-types'
 import type { DetailsPageMeta } from '@/lib/navigation-registry'
@@ -49,6 +61,7 @@ export default function WorkspaceSettingsPage() {
   const appShellContext = useAppShellContext()
   const activeWorkspaceId = appShellContext.activeWorkspaceId
   const onRefreshWorkspaces = appShellContext.onRefreshWorkspaces
+  const workspaces = appShellContext.workspaces
 
   // Workspace settings state
   const [wsName, setWsName] = useState('')
@@ -68,6 +81,22 @@ export default function WorkspaceSettingsPage() {
   // Mode cycling state
   const [enabledModes, setEnabledModes] = useState<PermissionMode[]>(['safe', 'ask', 'allow-all'])
   const [modeCyclingError, setModeCyclingError] = useState<string | null>(null)
+
+  // Delete workspace state
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [deleteConfirmationName, setDeleteConfirmationName] = useState('')
+  const [deleteWorkspaceError, setDeleteWorkspaceError] = useState<string | null>(null)
+  const [isDeletingWorkspace, setIsDeletingWorkspace] = useState(false)
+
+  const isLastWorkspace = workspaces.length <= 1
+  const isDeleteNameMatched = deleteConfirmationName.trim() === wsName.trim()
+
+  // Register dialog so window close shortcut closes modal first
+  useRegisterModal(deleteDialogOpen, () => {
+    setDeleteDialogOpen(false)
+    setDeleteConfirmationName('')
+    setDeleteWorkspaceError(null)
+  })
 
   // Load workspace settings when active workspace changes
   useEffect(() => {
@@ -312,6 +341,42 @@ export default function WorkspaceSettingsPage() {
     [enabledModes, updateWorkspaceSetting]
   )
 
+  const handleOpenDeleteDialog = useCallback(() => {
+    if (isLastWorkspace) return
+    setDeleteWorkspaceError(null)
+    setDeleteConfirmationName('')
+    setDeleteDialogOpen(true)
+  }, [isLastWorkspace])
+
+  const handleConfirmDeleteWorkspace = useCallback(async () => {
+    if (!activeWorkspaceId || !window.electronAPI) return
+    if (!isDeleteNameMatched) return
+
+    setIsDeletingWorkspace(true)
+    setDeleteWorkspaceError(null)
+    try {
+      const result = await window.electronAPI.deleteWorkspace(activeWorkspaceId)
+      if (!result.success) {
+        if (result.error === 'LAST_WORKSPACE') {
+          setDeleteWorkspaceError('At least one workspace must remain.')
+        } else if (result.error === 'NOT_FOUND') {
+          setDeleteWorkspaceError('Workspace not found.')
+        } else {
+          setDeleteWorkspaceError(result.error || 'Failed to delete workspace.')
+        }
+        return
+      }
+
+      setDeleteDialogOpen(false)
+      setDeleteConfirmationName('')
+      onRefreshWorkspaces?.()
+    } catch (error) {
+      setDeleteWorkspaceError(error instanceof Error ? error.message : 'Failed to delete workspace.')
+    } finally {
+      setIsDeletingWorkspace(false)
+    }
+  }, [activeWorkspaceId, isDeleteNameMatched, onRefreshWorkspaces])
+
   // Show empty state if no workspace is active
   if (!activeWorkspaceId) {
     return (
@@ -532,10 +597,98 @@ export default function WorkspaceSettingsPage() {
               </SettingsCard>
             </SettingsSection>
 
+            {/* Danger Zone */}
+            <SettingsSection
+              title="Danger Zone"
+              description="Delete this workspace and its Craft-managed data."
+              variant="danger"
+            >
+              <SettingsCard>
+                <SettingsRow
+                  label="Delete Workspace"
+                  description={isLastWorkspace
+                    ? 'At least one workspace must remain.'
+                    : 'Permanently removes sessions, sources, skills, and workspace settings.'}
+                  action={
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      onClick={handleOpenDeleteDialog}
+                      disabled={isLastWorkspace || isDeletingWorkspace}
+                    >
+                      Delete
+                    </Button>
+                  }
+                />
+              </SettingsCard>
+            </SettingsSection>
+
           </div>
         </div>
         </ScrollArea>
       </div>
+
+      <Dialog
+        open={deleteDialogOpen}
+        onOpenChange={(open) => {
+          setDeleteDialogOpen(open)
+          if (!open) {
+            setDeleteConfirmationName('')
+            setDeleteWorkspaceError(null)
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <AlertTriangle className="h-5 w-5" />
+              Delete Workspace
+            </DialogTitle>
+            <DialogDescription className="pt-2 text-left">
+              This permanently deletes Craft-managed workspace data.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 text-sm text-muted-foreground">
+            <p>To confirm, type the workspace name exactly:</p>
+            <p>Only Craft-managed files are removed. Other project files are kept.</p>
+            <p className="font-medium text-foreground">{wsName || 'Untitled Workspace'}</p>
+            <Input
+              value={deleteConfirmationName}
+              onChange={(e) => {
+                setDeleteConfirmationName(e.target.value)
+                setDeleteWorkspaceError(null)
+              }}
+              placeholder="Type workspace name"
+              autoFocus
+            />
+            {deleteWorkspaceError && (
+              <p className="text-xs text-destructive">{deleteWorkspaceError}</p>
+            )}
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDeleteDialogOpen(false)
+                setDeleteConfirmationName('')
+                setDeleteWorkspaceError(null)
+              }}
+              disabled={isDeletingWorkspace}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleConfirmDeleteWorkspace}
+              disabled={!isDeleteNameMatched || isDeletingWorkspace}
+            >
+              {isDeletingWorkspace ? 'Deleting...' : 'Delete Workspace'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

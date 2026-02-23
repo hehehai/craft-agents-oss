@@ -3948,6 +3948,48 @@ export class SessionManager {
     sessionLog.info(`Deleted session ${sessionId}`)
   }
 
+  /**
+   * Remove all in-memory runtime state for a workspace before deleting it.
+   * This aborts active sessions, disposes agents, and stops watchers/hooks
+   * so no background task can access deleted workspace paths.
+   */
+  async removeWorkspaceRuntimeState(workspaceId: string, workspaceRootPath?: string): Promise<void> {
+    const sessionIds = Array.from(this.sessions.values())
+      .filter(managed => managed.workspace.id === workspaceId)
+      .map(managed => managed.id)
+
+    for (const sessionId of sessionIds) {
+      try {
+        await this.deleteSession(sessionId)
+      } catch (error) {
+        sessionLog.error(`Failed to delete session ${sessionId} during workspace removal:`, error)
+      }
+    }
+
+    this.activeViewingSession.delete(workspaceId)
+
+    const rootPath = workspaceRootPath || getWorkspaceByNameOrId(workspaceId)?.rootPath
+    if (!rootPath) return
+
+    const watcher = this.configWatchers.get(rootPath)
+    if (watcher) {
+      watcher.stop()
+      this.configWatchers.delete(rootPath)
+      sessionLog.info(`Stopped config watcher for deleted workspace ${workspaceId}`)
+    }
+
+    const hookSystem = this.hookSystems.get(rootPath)
+    if (hookSystem) {
+      try {
+        hookSystem.dispose()
+      } catch (error) {
+        sessionLog.error(`Failed to dispose HookSystem for deleted workspace ${workspaceId}:`, error)
+      } finally {
+        this.hookSystems.delete(rootPath)
+      }
+    }
+  }
+
   async sendMessage(sessionId: string, message: string, attachments?: FileAttachment[], storedAttachments?: StoredAttachment[], options?: SendMessageOptions, existingMessageId?: string, _isAuthRetry?: boolean): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (!managed) {

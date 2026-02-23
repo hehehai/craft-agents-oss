@@ -31,6 +31,8 @@ const api: ElectronAPI = {
   getWorkspaces: () => ipcRenderer.invoke(IPC_CHANNELS.GET_WORKSPACES),
   createWorkspace: (folderPath: string, name: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.CREATE_WORKSPACE, folderPath, name),
+  deleteWorkspace: (workspaceId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.DELETE_WORKSPACE, workspaceId),
   checkWorkspaceSlug: (slug: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.CHECK_WORKSPACE_SLUG, slug),
 
@@ -40,6 +42,11 @@ const api: ElectronAPI = {
   openWorkspace: (workspaceId: string) => ipcRenderer.invoke(IPC_CHANNELS.OPEN_WORKSPACE, workspaceId),
   openSessionInNewWindow: (workspaceId: string, sessionId: string) => ipcRenderer.invoke(IPC_CHANNELS.OPEN_SESSION_IN_NEW_WINDOW, workspaceId, sessionId),
   switchWorkspace: (workspaceId: string) => ipcRenderer.invoke(IPC_CHANNELS.SWITCH_WORKSPACE, workspaceId),
+  onWorkspaceReassigned: (callback: (workspaceId: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, workspaceId: string) => callback(workspaceId)
+    ipcRenderer.on(IPC_CHANNELS.WINDOW_WORKSPACE_REASSIGNED, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.WINDOW_WORKSPACE_REASSIGNED, handler)
+  },
   closeWindow: () => ipcRenderer.invoke(IPC_CHANNELS.CLOSE_WINDOW),
   confirmCloseWindow: () => ipcRenderer.invoke(IPC_CHANNELS.WINDOW_CONFIRM_CLOSE),
   onCloseRequested: (callback: () => void) => {
