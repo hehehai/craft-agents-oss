@@ -474,16 +474,24 @@ export function FreeFormInput({
   // Double-Esc interrupt: show warning overlay on first Esc, interrupt on second
   const { showEscapeOverlay } = useEscapeInterrupt()
 
-  // Calculate max height: min(66% of window height, 540px)
+  // Calculate input max height.
+  // - Regular mode: larger cap for full chat experience.
+  // - Compact mode (EditPopover): smaller cap so footer actions stay visible.
   React.useEffect(() => {
     const updateMaxHeight = () => {
-      const maxFromWindow = Math.floor(window.innerHeight * 0.66)
-      setInputMaxHeight(Math.min(maxFromWindow, 540))
+      const regularMaxFromWindow = Math.floor(window.innerHeight * 0.66)
+      const compactMaxFromWindow = Math.floor(window.innerHeight * 0.3)
+
+      const nextMaxHeight = compactMode
+        ? Math.min(compactMaxFromWindow, 220)
+        : Math.min(regularMaxFromWindow, 540)
+
+      setInputMaxHeight(nextMaxHeight)
     }
     updateMaxHeight()
     window.addEventListener('resize', updateMaxHeight)
     return () => window.removeEventListener('resize', updateMaxHeight)
-  }, [])
+  }, [compactMode])
 
   const dragCounterRef = React.useRef(0)
   const containerRef = React.useRef<HTMLDivElement>(null)
@@ -1414,7 +1422,10 @@ export function FreeFormInput({
           skills={skills}
           sources={sources}
           workspaceId={workspaceSlug}
-          className="pl-5 pr-4 pt-4 pb-3 overflow-y-auto min-h-[88px]"
+          className={cn(
+            "pl-5 pr-4 pt-4 pb-3 overflow-y-auto",
+            compactMode ? "min-h-[72px]" : "min-h-[88px]"
+          )}
           style={{ maxHeight: inputMaxHeight }}
           data-tutorial="chat-input"
           spellCheck={spellCheck}
