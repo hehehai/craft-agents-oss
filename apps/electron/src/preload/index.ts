@@ -507,6 +507,14 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.GET_GIT_BRANCH, dirPath),
   getGitDiffStats: (dirPath: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.GET_GIT_DIFF_STATS, dirPath),
+  getGitStatus: (dirPath: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.GET_GIT_STATUS, dirPath),
+  listGitWorktrees: (dirPath: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.LIST_GIT_WORKTREES, dirPath),
+  createGitWorktree: (dirPath: string, branchName: string, targetPath?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.CREATE_GIT_WORKTREE, { dirPath, branchName, targetPath }),
+  mergeGitWorktreeBack: (repoDir: string, worktreeBranch: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MERGE_GIT_WORKTREE_BACK, { repoDir, worktreeBranch }),
 
   // Git Bash (Windows)
   checkGitBash: () => ipcRenderer.invoke(IPC_CHANNELS.GITBASH_CHECK),

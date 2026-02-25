@@ -1,10 +1,10 @@
 import { app, ipcMain, nativeTheme, nativeImage, dialog, shell, BrowserWindow } from 'electron'
 import { readFile, readdir, stat, realpath, mkdir, writeFile, unlink, rm } from 'fs/promises'
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs'
 import { normalize, isAbsolute, join, basename, dirname, resolve, relative, sep } from 'path'
 import { homedir, tmpdir } from 'os'
 import { randomUUID } from 'crypto'
-import { execFile, execSync } from 'child_process'
+import { execFile, execFileSync, execSync } from 'child_process'
 import { SessionManager } from './sessions'
 import { ipcLog, windowLog, searchLog } from './logger'
 import { WindowManager } from './window-manager'
@@ -1527,6 +1527,197 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
     }
   }
 
+  const GIT_COMMAND_TIMEOUT_MS = 10000
+  const WORKTREE_LINEAGE_PREFERENCES_KEY = 'worktreeLineage'
+
+  type GitRepoContext = {
+    repoRoot: string
+    commonDir: string
+    branch: string | null
+    detached: boolean
+  }
+
+  type WorktreeLineageRecord = {
+    baseBranch: string
+    createdAt: string
+    worktreePath: string
+  }
+
+  const runGitCommand = (cwd: string, args: string[]): string => {
+    return execFileSync('git', args, {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: GIT_COMMAND_TIMEOUT_MS,
+    }).trim()
+  }
+
+  const gitCommandSucceeds = (cwd: string, args: string[]): boolean => {
+    try {
+      execFileSync('git', args, {
+        cwd,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: GIT_COMMAND_TIMEOUT_MS,
+      })
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  const formatGitErrorMessage = (error: unknown): string => {
+    if (!error || typeof error !== 'object') return 'Unknown git error'
+    const stderr = 'stderr' in error ? (error as { stderr?: string | Buffer }).stderr : undefined
+    const stdout = 'stdout' in error ? (error as { stdout?: string | Buffer }).stdout : undefined
+    if (typeof stderr === 'string' && stderr.trim()) return stderr.trim()
+    if (Buffer.isBuffer(stderr) && stderr.length > 0) return stderr.toString('utf-8').trim()
+    if (typeof stdout === 'string' && stdout.trim()) return stdout.trim()
+    if (Buffer.isBuffer(stdout) && stdout.length > 0) return stdout.toString('utf-8').trim()
+    if (error instanceof Error) return error.message
+    return 'Unknown git error'
+  }
+
+  const loadPreferencesObject = (): Record<string, unknown> => {
+    const path = getPreferencesPath()
+    if (!existsSync(path)) return {}
+    const parsed = safeJsonParse(readFileSync(path, 'utf-8'))
+    if (!parsed || typeof parsed !== 'object') return {}
+    return parsed as Record<string, unknown>
+  }
+
+  const loadWorktreeLineage = (): Record<string, WorktreeLineageRecord> => {
+    const preferences = loadPreferencesObject()
+    const raw = preferences[WORKTREE_LINEAGE_PREFERENCES_KEY]
+    if (!raw || typeof raw !== 'object') return {}
+
+    const lineage: Record<string, WorktreeLineageRecord> = {}
+    for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (!value || typeof value !== 'object') continue
+      const entry = value as Record<string, unknown>
+      const baseBranch = typeof entry.baseBranch === 'string' ? entry.baseBranch.trim() : ''
+      const createdAt = typeof entry.createdAt === 'string' ? entry.createdAt.trim() : ''
+      const worktreePath = typeof entry.worktreePath === 'string' ? entry.worktreePath.trim() : ''
+      if (!baseBranch || !createdAt || !worktreePath) continue
+      lineage[key] = { baseBranch, createdAt, worktreePath }
+    }
+    return lineage
+  }
+
+  const saveWorktreeLineage = (lineage: Record<string, WorktreeLineageRecord>): void => {
+    const path = getPreferencesPath()
+    const preferences = loadPreferencesObject()
+    preferences[WORKTREE_LINEAGE_PREFERENCES_KEY] = lineage
+    preferences.updatedAt = Date.now()
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, JSON.stringify(preferences, null, 2), 'utf-8')
+  }
+
+  const getWorktreeLineageKey = (commonDir: string, branch: string): string => {
+    return `${normalize(commonDir)}::${branch}`
+  }
+
+  const setWorktreeLineageEntry = (
+    commonDir: string,
+    branch: string,
+    entry: WorktreeLineageRecord
+  ): void => {
+    const lineage = loadWorktreeLineage()
+    lineage[getWorktreeLineageKey(commonDir, branch)] = entry
+    saveWorktreeLineage(lineage)
+  }
+
+  const getWorktreeLineageEntry = (
+    commonDir: string,
+    branch: string
+  ): WorktreeLineageRecord | null => {
+    const lineage = loadWorktreeLineage()
+    return lineage[getWorktreeLineageKey(commonDir, branch)] ?? null
+  }
+
+  const getGitRepoContext = (dirPath: string): GitRepoContext | null => {
+    try {
+      const insideWorkTree = runGitCommand(dirPath, ['rev-parse', '--is-inside-work-tree'])
+      if (insideWorkTree !== 'true') return null
+
+      const repoRoot = runGitCommand(dirPath, ['rev-parse', '--show-toplevel'])
+      const commonDirRaw = runGitCommand(dirPath, ['rev-parse', '--git-common-dir'])
+      const commonDir = normalize(
+        isAbsolute(commonDirRaw) ? commonDirRaw : resolve(dirPath, commonDirRaw)
+      )
+
+      let branch = runGitCommand(dirPath, ['branch', '--show-current'])
+      if (!branch) {
+        const abbrev = runGitCommand(dirPath, ['rev-parse', '--abbrev-ref', 'HEAD'])
+        if (abbrev && abbrev !== 'HEAD') branch = abbrev
+      }
+
+      return {
+        repoRoot: normalize(repoRoot),
+        commonDir,
+        branch: branch || null,
+        detached: !branch,
+      }
+    } catch {
+      return null
+    }
+  }
+
+  const parseWorktreeBranch = (value: string): string | null => {
+    if (!value) return null
+    const refsPrefix = 'refs/heads/'
+    if (value.startsWith(refsPrefix)) return value.slice(refsPrefix.length)
+    return value
+  }
+
+  const listGitWorktrees = (
+    dirPath: string,
+    currentWorktreePath: string
+  ): Array<{ path: string; branch: string | null; isCurrent: boolean }> => {
+    const output = runGitCommand(dirPath, ['worktree', 'list', '--porcelain'])
+    const lines = output.split('\n')
+    const currentResolved = normalize(resolve(currentWorktreePath))
+    const entries: Array<{ path: string; branch: string | null; isCurrent: boolean }> = []
+    let pendingPath: string | null = null
+    let pendingBranch: string | null = null
+
+    const flush = () => {
+      if (!pendingPath) return
+      const resolvedPath = normalize(resolve(pendingPath))
+      entries.push({
+        path: pendingPath,
+        branch: pendingBranch,
+        isCurrent: resolvedPath === currentResolved,
+      })
+      pendingPath = null
+      pendingBranch = null
+    }
+
+    for (const line of lines) {
+      if (!line.trim()) {
+        flush()
+        continue
+      }
+
+      if (line.startsWith('worktree ')) {
+        flush()
+        pendingPath = line.slice('worktree '.length).trim()
+        continue
+      }
+
+      if (line.startsWith('branch ')) {
+        pendingBranch = parseWorktreeBranch(line.slice('branch '.length).trim())
+      }
+    }
+
+    flush()
+    return entries
+  }
+
+  const toWorktreeFolderName = (repoName: string, branchName: string): string => {
+    const safeSuffix = branchName.replace(/[\\/]/g, '-').replace(/\s+/g, '-')
+    return `${repoName}-${safeSuffix}`
+  }
+
   // Get git branch for a directory (returns null if not a git repo or git unavailable)
   ipcMain.handle(IPC_CHANNELS.GET_GIT_BRANCH, (_event, dirPath: string) => {
     try {
@@ -1582,6 +1773,180 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
       return null
     }
   })
+
+  ipcMain.handle(IPC_CHANNELS.GET_GIT_STATUS, (_event, dirPath: string) => {
+    const context = getGitRepoContext(dirPath)
+    if (!context) {
+      return {
+        isGitRepo: false,
+        branch: null,
+        detached: false,
+        repoRoot: null,
+        commonDir: null,
+      }
+    }
+
+    return {
+      isGitRepo: true,
+      branch: context.branch,
+      detached: context.detached,
+      repoRoot: context.repoRoot,
+      commonDir: context.commonDir,
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.LIST_GIT_WORKTREES, (_event, dirPath: string) => {
+    const context = getGitRepoContext(dirPath)
+    if (!context) return []
+
+    try {
+      return listGitWorktrees(context.repoRoot, context.repoRoot)
+    } catch {
+      return []
+    }
+  })
+
+  ipcMain.handle(
+    IPC_CHANNELS.CREATE_GIT_WORKTREE,
+    (
+      _event,
+      payload: { dirPath?: unknown; branchName?: unknown; targetPath?: unknown }
+    ) => {
+      const dirPath = typeof payload?.dirPath === 'string' ? payload.dirPath : ''
+      const branchName = typeof payload?.branchName === 'string' ? payload.branchName.trim() : ''
+      const targetPathInput = typeof payload?.targetPath === 'string' ? payload.targetPath.trim() : ''
+
+      if (!dirPath) return { success: false, error: 'Missing directory path' }
+      if (!branchName) return { success: false, error: 'Branch name is required' }
+
+      const context = getGitRepoContext(dirPath)
+      if (!context) return { success: false, error: 'Selected folder is not a git repository' }
+      if (!context.branch) {
+        return { success: false, error: 'Detached HEAD is not supported. Switch to a branch first.' }
+      }
+
+      try {
+        runGitCommand(context.repoRoot, ['check-ref-format', '--branch', branchName])
+      } catch {
+        return { success: false, error: `Invalid branch name: ${branchName}` }
+      }
+
+      if (gitCommandSucceeds(context.repoRoot, ['show-ref', '--verify', '--quiet', `refs/heads/${branchName}`])) {
+        return { success: false, error: `Branch already exists: ${branchName}` }
+      }
+
+      const defaultPath = join(dirname(context.repoRoot), toWorktreeFolderName(basename(context.repoRoot), branchName))
+      const resolvedTargetPath = normalize(targetPathInput
+        ? (isAbsolute(targetPathInput) ? targetPathInput : resolve(context.repoRoot, targetPathInput))
+        : defaultPath)
+
+      if (existsSync(resolvedTargetPath)) {
+        try {
+          if (readdirSync(resolvedTargetPath).length > 0) {
+            return { success: false, error: `Target path is not empty: ${resolvedTargetPath}` }
+          }
+        } catch {
+          return { success: false, error: `Target path is not accessible: ${resolvedTargetPath}` }
+        }
+      }
+
+      try {
+        runGitCommand(context.repoRoot, ['worktree', 'add', '-b', branchName, resolvedTargetPath, context.branch])
+        setWorktreeLineageEntry(context.commonDir, branchName, {
+          baseBranch: context.branch,
+          createdAt: new Date().toISOString(),
+          worktreePath: resolvedTargetPath,
+        })
+
+        return {
+          success: true,
+          path: resolvedTargetPath,
+          branch: branchName,
+          baseBranch: context.branch,
+        }
+      } catch (error) {
+        return {
+          success: false,
+          error: formatGitErrorMessage(error),
+        }
+      }
+    }
+  )
+
+  ipcMain.handle(
+    IPC_CHANNELS.MERGE_GIT_WORKTREE_BACK,
+    (
+      _event,
+      payload: { repoDir?: unknown; worktreeBranch?: unknown }
+    ) => {
+      const repoDir = typeof payload?.repoDir === 'string' ? payload.repoDir : ''
+      const worktreeBranch = typeof payload?.worktreeBranch === 'string' ? payload.worktreeBranch.trim() : ''
+
+      if (!repoDir) return { success: false, error: 'Missing repository directory' }
+      if (!worktreeBranch) return { success: false, error: 'Missing worktree branch' }
+
+      const context = getGitRepoContext(repoDir)
+      if (!context) return { success: false, error: 'Selected folder is not a git repository' }
+
+      const lineage = getWorktreeLineageEntry(context.commonDir, worktreeBranch)
+      if (!lineage) {
+        return { success: false, error: `No worktree lineage found for branch: ${worktreeBranch}` }
+      }
+
+      const baseBranch = lineage.baseBranch
+      if (!baseBranch) return { success: false, error: 'Invalid lineage: missing base branch' }
+      if (baseBranch === worktreeBranch) {
+        return { success: false, error: 'Cannot merge a branch into itself' }
+      }
+
+      let worktrees: Array<{ path: string; branch: string | null; isCurrent: boolean }> = []
+      try {
+        worktrees = listGitWorktrees(context.repoRoot, context.repoRoot)
+      } catch (error) {
+        return { success: false, error: formatGitErrorMessage(error) }
+      }
+
+      const baseWorktree = worktrees.find(worktree => worktree.branch === baseBranch)
+      if (!baseWorktree) {
+        return {
+          success: false,
+          error: `Base branch "${baseBranch}" is not checked out in any worktree`,
+        }
+      }
+
+      try {
+        const dirtyStatus = runGitCommand(baseWorktree.path, ['status', '--porcelain'])
+        if (dirtyStatus.trim()) {
+          return {
+            success: false,
+            error: `Base worktree has uncommitted changes: ${baseWorktree.path}`,
+          }
+        }
+
+        runGitCommand(baseWorktree.path, ['switch', baseBranch])
+      } catch (error) {
+        return { success: false, error: formatGitErrorMessage(error) }
+      }
+
+      try {
+        runGitCommand(baseWorktree.path, ['merge', '--no-ff', worktreeBranch])
+        const mergeCommit = runGitCommand(baseWorktree.path, ['rev-parse', 'HEAD'])
+        return {
+          success: true,
+          mergedInto: baseBranch,
+          mergeCommit,
+        }
+      } catch (error) {
+        const message = formatGitErrorMessage(error)
+        const isConflict = /conflict/i.test(message)
+        return {
+          success: false,
+          conflict: isConflict,
+          error: message,
+        }
+      }
+    }
+  )
 
   // Git Bash detection and configuration (Windows only)
   ipcMain.handle(IPC_CHANNELS.GITBASH_CHECK, async () => {

@@ -18,6 +18,8 @@ interface RenameDialogProps {
   onValueChange: (value: string) => void
   onSubmit: () => void
   placeholder?: string
+  submitLabel?: string
+  submitDisabled?: boolean
 }
 
 export function RenameDialog({
@@ -28,6 +30,8 @@ export function RenameDialog({
   onValueChange,
   onSubmit,
   placeholder = "Enter a name...",
+  submitLabel = "Save",
+  submitDisabled = false,
 }: RenameDialogProps) {
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -45,7 +49,7 @@ export function RenameDialog({
   }, [open])
 
   const handleSubmit = () => {
-    if (value.trim()) {
+    if (value.trim() && !submitDisabled) {
       onSubmit()
     }
   }
@@ -73,8 +77,8 @@ export function RenameDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleSubmit} disabled={!value.trim()}>
-            Save
+          <Button onClick={handleSubmit} disabled={!value.trim() || submitDisabled}>
+            {submitLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

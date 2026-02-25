@@ -59,7 +59,7 @@ export interface StoredConfig {
   // Auto-update
   dismissedUpdateVersion?: string;  // Version that user dismissed (skip notifications for this version)
   // Input settings
-  autoCapitalisation?: boolean;  // Auto-capitalize first letter when typing (default: true)
+  autoCapitalisation?: boolean;  // Auto-capitalize first letter when typing (default: false)
   sendMessageKey?: 'enter' | 'cmd-enter';  // Key to send messages (default: 'enter')
   spellCheck?: boolean;  // Enable spell check in input (default: false)
   // Experimental: OpenAI backend variant for A/B testing
@@ -232,7 +232,7 @@ export function setNotificationsEnabled(enabled: boolean): void {
 
 /**
  * Get whether auto-capitalisation is enabled.
- * Defaults to true if not set.
+ * Defaults to false if not set.
  */
 export function getAutoCapitalisation(): boolean {
   const config = loadStoredConfig();

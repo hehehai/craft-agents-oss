@@ -11,6 +11,8 @@ import {
 	ChevronDown,
 	Loader2,
 	AlertCircle,
+	Plus,
+	GitMerge,
 } from "lucide-react";
 import { Icon_Git, Icon_Home, Icon_Folder } from "@craft-agent/ui";
 
@@ -83,6 +85,7 @@ import type {
 	FileAttachment,
 	LoadedSource,
 	LoadedSkill,
+	GitStatus,
 } from "../../../../shared/types";
 import type { PermissionMode } from "@craft-agent/shared/agent/modes";
 import { PERMISSION_MODE_ORDER } from "@craft-agent/shared/agent/modes";
@@ -507,7 +510,7 @@ export function FreeFormInput({
 	const [modelDropdownOpen, setModelDropdownOpen] = React.useState(false);
 
 	// Input settings (loaded from config)
-	const [autoCapitalisation, setAutoCapitalisation] = React.useState(true);
+	const [autoCapitalisation, setAutoCapitalisation] = React.useState(false);
 	const [sendMessageKey, setSendMessageKey] = React.useState<
 		"enter" | "cmd-enter"
 	>("enter");
@@ -2393,6 +2396,29 @@ function formatPathForDisplay(path: string, homeDir: string): string {
 	return `in ${displayPath}`;
 }
 
+function getWorktreeLineageBaseBranch(
+	content: string,
+	commonDir: string,
+	worktreeBranch: string,
+): string | null {
+	try {
+		const preferences = JSON.parse(content) as Record<string, unknown>;
+		const raw = preferences.worktreeLineage;
+		if (!raw || typeof raw !== "object") return null;
+
+		const key = `${commonDir}::${worktreeBranch}`;
+		const entry = (raw as Record<string, unknown>)[key];
+		if (!entry || typeof entry !== "object") return null;
+
+		const baseBranch = (entry as Record<string, unknown>).baseBranch;
+		return typeof baseBranch === "string" && baseBranch.trim()
+			? baseBranch.trim()
+			: null;
+	} catch {
+		return null;
+	}
+}
+
 /**
  * WorkingDirectoryBadge - Context badge for selecting working directory
  * Uses cmdk for filterable folder list when there are more than 5 recent folders.
@@ -2413,11 +2439,16 @@ function WorkingDirectoryBadge({
 	const [recentDirs, setRecentDirs] = React.useState<string[]>([]);
 	const [popoverOpen, setPopoverOpen] = React.useState(false);
 	const [homeDir, setHomeDir] = React.useState<string>("");
-	const [gitBranch, setGitBranch] = React.useState<string | null>(null);
+	const [gitStatus, setGitStatus] = React.useState<GitStatus | null>(null);
 	const [gitDiffStats, setGitDiffStats] = React.useState<{
 		added: number;
 		removed: number;
 	} | null>(null);
+	const [mergeBaseBranch, setMergeBaseBranch] = React.useState<string | null>(null);
+	const [worktreeCount, setWorktreeCount] = React.useState(0);
+	const [worktreeMenuOpen, setWorktreeMenuOpen] = React.useState(false);
+	const [isCreatingWorktree, setIsCreatingWorktree] = React.useState(false);
+	const [isMergingWorktree, setIsMergingWorktree] = React.useState(false);
 	const [filter, setFilter] = React.useState("");
 	const inputRef = React.useRef<HTMLInputElement>(null);
 	const workingDirectoryRef = React.useRef(workingDirectory);
@@ -2453,23 +2484,44 @@ function WorkingDirectoryBadge({
 
 					const currentWorkingDirectory = workingDirectoryRef.current;
 					if (!currentWorkingDirectory) {
-						setGitBranch(null);
+						setGitStatus(null);
 						setGitDiffStats(null);
+						setMergeBaseBranch(null);
+						setWorktreeCount(0);
 						continue;
 					}
 
-					const [branch, diffStats] = await Promise.all([
-						window.electronAPI.getGitBranch(currentWorkingDirectory),
+					const [status, diffStats, worktrees] = await Promise.all([
+						window.electronAPI.getGitStatus(currentWorkingDirectory),
 						window.electronAPI.getGitDiffStats(currentWorkingDirectory),
+						window.electronAPI.listGitWorktrees(currentWorkingDirectory),
 					]);
 
+					let baseBranch: string | null = null;
+					if (status.isGitRepo && status.commonDir && status.branch) {
+						try {
+							const { content } = await window.electronAPI.readPreferences();
+							baseBranch = getWorktreeLineageBaseBranch(
+								content,
+								status.commonDir,
+								status.branch,
+							);
+						} catch {
+							baseBranch = null;
+						}
+					}
+
 					if (sequence !== refreshSequenceRef.current) continue;
-					setGitBranch(branch);
+					setGitStatus(status);
 					setGitDiffStats(diffStats);
+					setMergeBaseBranch(baseBranch);
+					setWorktreeCount(worktrees.length);
 				} while (refreshPendingRef.current);
 			} catch {
-				setGitBranch(null);
+				setGitStatus(null);
 				setGitDiffStats(null);
+				setMergeBaseBranch(null);
+				setWorktreeCount(0);
 			} finally {
 				refreshInFlightRef.current = false;
 			}
@@ -2522,6 +2574,8 @@ function WorkingDirectoryBadge({
 			addRecentDir(selectedPath);
 			setRecentDirs(getRecentDirs());
 			onWorkingDirectoryChange(selectedPath);
+			workingDirectoryRef.current = selectedPath;
+			refreshGitState();
 		}
 	};
 
@@ -2529,12 +2583,16 @@ function WorkingDirectoryBadge({
 		addRecentDir(path); // Move to top of recent list
 		setRecentDirs(getRecentDirs());
 		onWorkingDirectoryChange(path);
+		workingDirectoryRef.current = path;
+		refreshGitState();
 		setPopoverOpen(false);
 	};
 
 	const handleReset = () => {
 		if (sessionFolderPath) {
 			onWorkingDirectoryChange(sessionFolderPath);
+			workingDirectoryRef.current = sessionFolderPath;
+			refreshGitState();
 			setPopoverOpen(false);
 		}
 	};
@@ -2550,15 +2608,18 @@ function WorkingDirectoryBadge({
 	// Show filter input only when more than 5 recent folders
 	const showFilter = filteredRecent.length > 5;
 
+	const hasWorkingDirectory = !!workingDirectory;
+	const gitBranch = gitStatus?.branch ?? null;
+
 	// Determine label - "Work in Folder" if not set or at session root, otherwise folder name
 	const hasFolder =
 		!!workingDirectory && workingDirectory !== sessionFolderPath;
 	const folderName = hasFolder
 		? getPathBasename(workingDirectory) || "Folder"
 		: "Work in Folder";
-	const isGitRepo = hasFolder && (gitBranch !== null || gitDiffStats !== null);
+	const isGitRepo = hasWorkingDirectory && !!gitStatus?.isGitRepo;
 	const showGitDiffStats =
-		hasFolder &&
+		hasWorkingDirectory &&
 		!!gitDiffStats &&
 		(gitDiffStats.added !== 0 || gitDiffStats.removed !== 0);
 	const folderLabel =
@@ -2577,6 +2638,98 @@ function WorkingDirectoryBadge({
 	// Show reset option when a folder is selected and it differs from session folder
 	const showReset =
 		hasFolder && sessionFolderPath && sessionFolderPath !== workingDirectory;
+	const showBranchBadge = hasWorkingDirectory && isGitRepo && !!gitBranch;
+
+	const handleCreateWorktree = React.useCallback(async () => {
+		if (!workingDirectory || isCreatingWorktree) return;
+		const branchName = window.prompt("New worktree branch name")?.trim();
+		if (!branchName) return;
+
+		setIsCreatingWorktree(true);
+		try {
+			const result = await window.electronAPI.createGitWorktree(
+				workingDirectory,
+				branchName,
+			);
+			if (!result.success || !result.path) {
+				toast.error("Failed to create worktree", {
+					description: result.error || "Unknown error",
+				});
+				return;
+			}
+
+			addRecentDir(result.path);
+			setRecentDirs(getRecentDirs());
+			onWorkingDirectoryChange(result.path);
+			toast.success(`Created worktree ${result.branch ?? branchName}`, {
+				description: `Based on ${result.baseBranch ?? "current branch"}`,
+			});
+			refreshGitState();
+		} catch (error) {
+			toast.error("Failed to create worktree", {
+				description:
+					error instanceof Error ? error.message : "Unknown error",
+			});
+		} finally {
+			setIsCreatingWorktree(false);
+		}
+	}, [
+		isCreatingWorktree,
+		onWorkingDirectoryChange,
+		refreshGitState,
+		workingDirectory,
+	]);
+
+	const handleMergeWorktreeBack = React.useCallback(async () => {
+		if (
+			!workingDirectory ||
+			!gitBranch ||
+			!mergeBaseBranch ||
+			isMergingWorktree
+		) {
+			return;
+		}
+
+		const confirmed = window.confirm(
+			`Merge "${gitBranch}" into "${mergeBaseBranch}" with --no-ff?`,
+		);
+		if (!confirmed) return;
+
+		setIsMergingWorktree(true);
+		try {
+			const result = await window.electronAPI.mergeGitWorktreeBack(
+				workingDirectory,
+				gitBranch,
+			);
+			if (result.success) {
+				toast.success(`Merged into ${result.mergedInto ?? mergeBaseBranch}`);
+			} else if (result.conflict) {
+				toast.error("Merge has conflicts", {
+					description:
+						result.error ||
+						"Resolve conflicts manually in the target worktree and commit.",
+				});
+			} else {
+				toast.error("Failed to merge worktree", {
+					description: result.error || "Unknown error",
+				});
+			}
+			refreshGitState();
+		} catch (error) {
+			toast.error("Failed to merge worktree", {
+				description:
+					error instanceof Error ? error.message : "Unknown error",
+			});
+		} finally {
+			setIsMergingWorktree(false);
+		}
+	}, [
+		gitBranch,
+		isMergingWorktree,
+		mergeBaseBranch,
+		refreshGitState,
+		workingDirectory,
+	]);
 
 	// Styles matching todo-filter-menu.tsx for consistency
 	const MENU_CONTAINER_STYLE =
@@ -2587,147 +2740,210 @@ function WorkingDirectoryBadge({
 		"flex cursor-pointer select-none items-center gap-2 rounded-[6px] px-3 py-1.5 text-[13px] outline-none";
 
 	return (
-		<Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
-			<PopoverTrigger asChild>
-				<span className="shrink min-w-0 overflow-hidden py-px">
-					<FreeFormInputContextBadge
-						icon={
-							isGitRepo ? (
-								<Icon_Git className="h-4 w-4" />
-							) : hasFolder ? (
-								<Icon_Folder className="h-4 w-4" />
-							) : (
-								<Icon_Home className="h-4 w-4" />
-							)
-						}
-						label={folderLabel}
-						isExpanded={isEmptySession}
-						hasSelection={hasFolder}
-						showChevron={true}
-						isOpen={popoverOpen}
-						tooltip={
-							hasFolder ? (
-								<span className="flex flex-col gap-0.5">
-									<span className="font-medium">Working directory</span>
-									<span className="text-xs opacity-70">
-										{formatPathForDisplay(workingDirectory, homeDir)}
-									</span>
-									{gitBranch && (
-										<span className="text-xs opacity-70">on {gitBranch}</span>
-									)}
-									{showGitDiffStats && gitDiffStats && (
+		<div className="flex items-center gap-1 min-w-0">
+			<Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
+				<PopoverTrigger asChild>
+					<span className="shrink min-w-0 overflow-hidden py-px">
+						<FreeFormInputContextBadge
+							icon={
+								isGitRepo ? (
+									<Icon_Git className="h-4 w-4" />
+								) : hasFolder ? (
+									<Icon_Folder className="h-4 w-4" />
+								) : (
+									<Icon_Home className="h-4 w-4" />
+								)
+							}
+							label={folderLabel}
+							isExpanded={isEmptySession}
+							hasSelection={hasFolder}
+							showChevron={true}
+							isOpen={popoverOpen}
+							tooltip={
+								hasWorkingDirectory ? (
+									<span className="flex flex-col gap-0.5">
+										<span className="font-medium">Working directory</span>
 										<span className="text-xs opacity-70">
-											changes +{gitDiffStats.added}/-{gitDiffStats.removed}
+											{formatPathForDisplay(workingDirectory, homeDir)}
 										</span>
-									)}
-								</span>
-							) : (
-								"Choose working directory"
-							)
-						}
-					/>
-				</span>
-			</PopoverTrigger>
-			<PopoverContent
-				side="top"
-				align="start"
-				sideOffset={8}
-				className={MENU_CONTAINER_STYLE}
-			>
-				<CommandPrimitive shouldFilter={showFilter}>
-					{/* Filter input - only shown when more than 5 recent folders */}
-					{showFilter && (
-						<div className="border-b border-border/50 px-3 py-2">
-							<CommandPrimitive.Input
-								ref={inputRef}
-								value={filter}
-								onValueChange={setFilter}
-								placeholder="Filter folders..."
-								className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground/50 placeholder:select-none"
-							/>
-						</div>
-					)}
-
-					<CommandPrimitive.List className={MENU_LIST_STYLE}>
-						{/* Current Folder Display - shown at top with checkmark */}
-						{hasFolder && (
-							<CommandPrimitive.Item
-								value={`current-${workingDirectory}`}
-								className={cn(
-									MENU_ITEM_STYLE,
-									"pointer-events-none bg-foreground/5",
-								)}
-								disabled
-							>
-								<Icon_Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
-								<span className="flex-1 min-w-0 truncate">
-									<span>{folderName}</span>
-									<span className="text-muted-foreground ml-1.5">
-										{formatPathForDisplay(workingDirectory, homeDir)}
+										{gitBranch && (
+											<span className="text-xs opacity-70">on {gitBranch}</span>
+										)}
+										{showGitDiffStats && gitDiffStats && (
+											<span className="text-xs opacity-70">
+												changes +{gitDiffStats.added}/-{gitDiffStats.removed}
+											</span>
+										)}
 									</span>
-								</span>
-								<Check className="h-4 w-4 shrink-0" />
-							</CommandPrimitive.Item>
+								) : (
+									"Choose working directory"
+								)
+							}
+						/>
+					</span>
+				</PopoverTrigger>
+				<PopoverContent
+					side="top"
+					align="start"
+					sideOffset={8}
+					className={MENU_CONTAINER_STYLE}
+				>
+					<CommandPrimitive shouldFilter={showFilter}>
+						{/* Filter input - only shown when more than 5 recent folders */}
+						{showFilter && (
+							<div className="border-b border-border/50 px-3 py-2">
+								<CommandPrimitive.Input
+									ref={inputRef}
+									value={filter}
+									onValueChange={setFilter}
+									placeholder="Filter folders..."
+									className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground/50 placeholder:select-none"
+								/>
+							</div>
 						)}
 
-						{/* Separator after current folder */}
-						{hasFolder && filteredRecent.length > 0 && (
-							<div className="h-px bg-border my-1 mx-1" />
-						)}
-
-						{/* Recent Directories - filterable (current directory already filtered out via filteredRecent) */}
-						{filteredRecent.map((path) => {
-							const recentFolderName = getPathBasename(path) || "Folder";
-							return (
+						<CommandPrimitive.List className={MENU_LIST_STYLE}>
+							{/* Current Folder Display - shown at top with checkmark */}
+							{hasFolder && (
 								<CommandPrimitive.Item
-									key={path}
-									value={`${recentFolderName} ${path}`}
-									onSelect={() => handleSelectRecent(path)}
+									value={`current-${workingDirectory}`}
 									className={cn(
 										MENU_ITEM_STYLE,
-										"data-[selected=true]:bg-foreground/5",
+										"pointer-events-none bg-foreground/5",
 									)}
+									disabled
 								>
 									<Icon_Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
 									<span className="flex-1 min-w-0 truncate">
-										<span>{recentFolderName}</span>
+										<span>{folderName}</span>
 										<span className="text-muted-foreground ml-1.5">
-											{formatPathForDisplay(path, homeDir)}
+											{formatPathForDisplay(workingDirectory, homeDir)}
 										</span>
 									</span>
+									<Check className="h-4 w-4 shrink-0" />
 								</CommandPrimitive.Item>
-							);
-						})}
+							)}
 
-						{/* Empty state when filtering */}
-						{showFilter && (
-							<CommandPrimitive.Empty className="py-3 text-center text-sm text-muted-foreground">
-								No folders found
-							</CommandPrimitive.Empty>
-						)}
-					</CommandPrimitive.List>
+							{/* Separator after current folder */}
+							{hasFolder && filteredRecent.length > 0 && (
+								<div className="h-px bg-border my-1 mx-1" />
+							)}
 
-					{/* Bottom actions - always visible, outside scrollable area */}
-					<div className="border-t border-border/50 p-1">
-						<button
-							type="button"
-							onClick={handleChooseFolder}
-							className={cn(MENU_ITEM_STYLE, "w-full hover:bg-foreground/5")}
-						>
-							Choose Folder...
-						</button>
-						{showReset && (
+							{/* Recent Directories - filterable (current directory already filtered out via filteredRecent) */}
+							{filteredRecent.map((path) => {
+								const recentFolderName = getPathBasename(path) || "Folder";
+								return (
+									<CommandPrimitive.Item
+										key={path}
+										value={`${recentFolderName} ${path}`}
+										onSelect={() => handleSelectRecent(path)}
+										className={cn(
+											MENU_ITEM_STYLE,
+											"data-[selected=true]:bg-foreground/5",
+										)}
+									>
+										<Icon_Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
+										<span className="flex-1 min-w-0 truncate">
+											<span>{recentFolderName}</span>
+											<span className="text-muted-foreground ml-1.5">
+												{formatPathForDisplay(path, homeDir)}
+											</span>
+										</span>
+									</CommandPrimitive.Item>
+								);
+							})}
+
+							{/* Empty state when filtering */}
+							{showFilter && (
+								<CommandPrimitive.Empty className="py-3 text-center text-sm text-muted-foreground">
+									No folders found
+								</CommandPrimitive.Empty>
+							)}
+						</CommandPrimitive.List>
+
+						{/* Bottom actions - always visible, outside scrollable area */}
+						<div className="border-t border-border/50 p-1">
 							<button
 								type="button"
-								onClick={handleReset}
+								onClick={handleChooseFolder}
 								className={cn(MENU_ITEM_STYLE, "w-full hover:bg-foreground/5")}
 							>
-								Reset
+								Choose Folder...
 							</button>
+							{showReset && (
+								<button
+									type="button"
+									onClick={handleReset}
+									className={cn(MENU_ITEM_STYLE, "w-full hover:bg-foreground/5")}
+								>
+									Reset
+								</button>
+							)}
+						</div>
+					</CommandPrimitive>
+				</PopoverContent>
+			</Popover>
+
+			{showBranchBadge && (
+				<DropdownMenu open={worktreeMenuOpen} onOpenChange={setWorktreeMenuOpen}>
+					<DropdownMenuTrigger asChild>
+						<span className="shrink min-w-0 overflow-hidden py-px">
+							<FreeFormInputContextBadge
+								icon={
+									<span className="inline-flex items-center gap-1">
+										<Icon_Git className="h-4 w-4" />
+										<ChevronDown className="h-3 w-3 opacity-60" />
+									</span>
+								}
+								label={gitBranch}
+								hasSelection={true}
+								isOpen={worktreeMenuOpen}
+								tooltip={`Branch: ${gitBranch}`}
+							/>
+						</span>
+					</DropdownMenuTrigger>
+					<StyledDropdownMenuContent side="top" align="start" sideOffset={8}>
+						<StyledDropdownMenuItem
+							onSelect={() => {
+								void handleCreateWorktree();
+							}}
+							disabled={isCreatingWorktree}
+						>
+							<Plus className="h-3.5 w-3.5" />
+							<span className="flex-1">
+								{isCreatingWorktree ? "Creating..." : "New Worktree..."}
+							</span>
+						</StyledDropdownMenuItem>
+						<StyledDropdownMenuSeparator />
+						<StyledDropdownMenuItem
+							onSelect={() => {
+								void handleMergeWorktreeBack();
+							}}
+							disabled={!mergeBaseBranch || isMergingWorktree}
+						>
+							<GitMerge className="h-3.5 w-3.5" />
+							<span className="flex-1">
+								{mergeBaseBranch
+									? `Merge to ${mergeBaseBranch}`
+									: "Merge Worktree Back"}
+							</span>
+						</StyledDropdownMenuItem>
+						{!mergeBaseBranch && (
+							<StyledDropdownMenuItem disabled>
+								<span className="flex-1 text-xs text-muted-foreground">
+									Current branch is not a tracked worktree
+								</span>
+							</StyledDropdownMenuItem>
 						)}
-					</div>
-				</CommandPrimitive>
-			</PopoverContent>
-		</Popover>
+						<StyledDropdownMenuSeparator />
+						<StyledDropdownMenuItem disabled>
+							<span className="flex-1 text-xs text-muted-foreground">
+								Worktrees: {worktreeCount}
+							</span>
+						</StyledDropdownMenuItem>
+					</StyledDropdownMenuContent>
+				</DropdownMenu>
+			)}
+		</div>
 	);
 }

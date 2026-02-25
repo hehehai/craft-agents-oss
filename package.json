@@ -10,6 +10,8 @@
     "!apps/online-docs"
   ],
   "scripts": {
+    "check": "bun run lint",
+    "checktypes": "bun run typecheck:all && cd apps/electron && bun run typecheck",
     "test": "bun test",
     "typecheck": "cd packages/shared && bun run tsc --noEmit",
     "typecheck:all": "cd packages/core && bun run tsc --noEmit && cd ../shared && bun run tsc --noEmit",

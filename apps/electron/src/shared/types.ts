@@ -183,6 +183,48 @@ export interface GitDiffStats {
 }
 
 /**
+ * Git repository status for a directory.
+ */
+export interface GitStatus {
+  isGitRepo: boolean
+  branch: string | null
+  detached: boolean
+  repoRoot: string | null
+  commonDir: string | null
+}
+
+/**
+ * Git worktree entry.
+ */
+export interface GitWorktreeInfo {
+  path: string
+  branch: string | null
+  isCurrent: boolean
+}
+
+/**
+ * Result of creating a new git worktree.
+ */
+export interface GitCreateWorktreeResult {
+  success: boolean
+  path?: string
+  branch?: string
+  baseBranch?: string
+  error?: string
+}
+
+/**
+ * Result of merging a worktree branch back to its base branch.
+ */
+export interface GitMergeWorktreeBackResult {
+  success: boolean
+  mergedInto?: string
+  mergeCommit?: string
+  conflict?: boolean
+  error?: string
+}
+
+/**
  * Result of sharing or revoking a session
  */
 export interface ShareResult {
@@ -862,6 +904,10 @@ export const IPC_CHANNELS = {
   // Git operations
   GET_GIT_BRANCH: 'git:getBranch',
   GET_GIT_DIFF_STATS: 'git:getDiffStats',
+  GET_GIT_STATUS: 'git:getStatus',
+  LIST_GIT_WORKTREES: 'git:listWorktrees',
+  CREATE_GIT_WORKTREE: 'git:createWorktree',
+  MERGE_GIT_WORKTREE_BACK: 'git:mergeWorktreeBack',
 
   // Git Bash (Windows)
   GITBASH_CHECK: 'gitbash:check',
@@ -1174,6 +1220,10 @@ export interface ElectronAPI {
   // Git operations
   getGitBranch(dirPath: string): Promise<string | null>
   getGitDiffStats(dirPath: string): Promise<GitDiffStats | null>
+  getGitStatus(dirPath: string): Promise<GitStatus>
+  listGitWorktrees(dirPath: string): Promise<GitWorktreeInfo[]>
+  createGitWorktree(dirPath: string, branchName: string, targetPath?: string): Promise<GitCreateWorktreeResult>
+  mergeGitWorktreeBack(repoDir: string, worktreeBranch: string): Promise<GitMergeWorktreeBackResult>
 
   // Git Bash (Windows)
   checkGitBash(): Promise<GitBashStatus>

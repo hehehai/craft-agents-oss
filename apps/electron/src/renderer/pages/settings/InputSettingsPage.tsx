@@ -35,7 +35,7 @@ export const meta: DetailsPageMeta = {
 
 export default function InputSettingsPage() {
   // Auto-capitalisation state
-  const [autoCapitalisation, setAutoCapitalisation] = useState(true)
+  const [autoCapitalisation, setAutoCapitalisation] = useState(false)
 
   // Spell check state (default off)
   const [spellCheck, setSpellCheck] = useState(false)

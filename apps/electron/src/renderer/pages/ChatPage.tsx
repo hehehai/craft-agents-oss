@@ -305,7 +305,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
   }, [session?.model, session?.llmConnection, workspaceDefaultLlmConnection, llmConnections, connectionUnavailable])
 
   // Working directory for this session
-  const workingDirectory = session?.workingDirectory
+  const workingDirectory = session?.workingDirectory ?? sessionMeta?.workingDirectory
   const hasSelectedFolder = React.useMemo(() => {
     if (!workingDirectory) return false
     if (!session?.sessionFolderPath) return true
