@@ -10,11 +10,12 @@ import type { ColumnDef } from '@tanstack/react-table'
 import { PanelHeader } from '@/components/app-shell/PanelHeader'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { HeaderMenu } from '@/components/ui/HeaderMenu'
+import { Button } from '@/components/ui/button'
 import { EditPopover, EditButton, getEditConfig } from '@/components/ui/EditPopover'
 import { useTheme } from '@/context/ThemeContext'
 import { useAppShellContext } from '@/context/AppShellContext'
 import { routes } from '@/lib/navigate'
-import { Monitor, Sun, Moon } from 'lucide-react'
+import { Monitor, Sun, Moon, Volume2 } from 'lucide-react'
 import type { DetailsPageMeta } from '@/lib/navigation-registry'
 import type { ToolIconMapping } from '../../../shared/types'
 
@@ -32,6 +33,15 @@ import { useWorkspaceIcons } from '@/hooks/useWorkspaceIcon'
 import { Info_DataTable, SortableHeader } from '@/components/info/Info_DataTable'
 import { Info_Badge } from '@/components/info/Info_Badge'
 import type { PresetTheme } from '@config/theme'
+import {
+  CHAT_COMPLETION_SOUND_OPTIONS,
+  DEFAULT_CHAT_COMPLETION_SOUND,
+  playChatCompletionSound,
+  readChatCompletionSoundPreference,
+  type ChatCompletionSoundId,
+  type ChatCompletionSoundPreference,
+  writeChatCompletionSoundPreference,
+} from '@/lib/chat-completion-sound'
 import {
   DEFAULT_CHAT_TYPOGRAPHY,
   readChatTypographyPreference,
@@ -149,6 +159,7 @@ export default function AppearanceSettingsPage() {
   const [chatLineHeightInput, setChatLineHeightInput] = useState(String(DEFAULT_CHAT_TYPOGRAPHY.lineHeight))
   const [chatFontSizeError, setChatFontSizeError] = useState<string | undefined>()
   const [chatLineHeightError, setChatLineHeightError] = useState<string | undefined>()
+  const [chatCompletionSound, setChatCompletionSound] = useState<ChatCompletionSoundPreference>(DEFAULT_CHAT_COMPLETION_SOUND)
 
   useEffect(() => {
     let cancelled = false
@@ -164,10 +175,40 @@ export default function AppearanceSettingsPage() {
     }
   }, [])
 
+  useEffect(() => {
+    let cancelled = false
+    readChatCompletionSoundPreference().then((preferences) => {
+      if (!cancelled) {
+        setChatCompletionSound(preferences)
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   const saveChatTypography = useCallback(async (next: ChatTypographyPreference) => {
     setChatTypography(next)
     await writeChatTypographyPreference(next)
   }, [])
+
+  const saveChatCompletionSound = useCallback(async (next: ChatCompletionSoundPreference) => {
+    setChatCompletionSound(next)
+    await writeChatCompletionSoundPreference(next)
+  }, [])
+
+  const handleChatCompletionSoundEnabledChange = useCallback((checked: boolean) => {
+    void saveChatCompletionSound({ ...chatCompletionSound, enabled: checked })
+  }, [chatCompletionSound, saveChatCompletionSound])
+
+  const handleChatCompletionSoundIdChange = useCallback((value: string) => {
+    const soundId = value as ChatCompletionSoundId
+    void saveChatCompletionSound({ ...chatCompletionSound, soundId })
+  }, [chatCompletionSound, saveChatCompletionSound])
+
+  const handlePreviewChatCompletionSound = useCallback(() => {
+    void playChatCompletionSound(chatCompletionSound.soundId)
+  }, [chatCompletionSound.soundId])
 
   const handleChatFontFamilyCommit = useCallback(() => {
     const nextFamily = chatFontFamilyInput.trim()
@@ -400,6 +441,49 @@ export default function AppearanceSettingsPage() {
                     placeholder="1.6"
                     inCard
                   />
+                </SettingsCard>
+              </SettingsSection>
+
+              {/* Chat Completion Sound */}
+              <SettingsSection
+                title="Chat Completion Sound"
+                description="Play a short cue when a chat run finishes in the background."
+              >
+                <SettingsCard>
+                  <SettingsToggle
+                    label="Play completion sound"
+                    description="Enabled by default. Plays only when this window is not focused."
+                    checked={chatCompletionSound.enabled}
+                    onCheckedChange={handleChatCompletionSoundEnabledChange}
+                  />
+                  <SettingsRow
+                    label="Completion sound"
+                    description="Choose one of the built-in prompt sounds."
+                    action={
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={handlePreviewChatCompletionSound}
+                        aria-label="Preview completion sound"
+                      >
+                        <Volume2 className="h-3.5 w-3.5" />
+                        Preview
+                      </Button>
+                    }
+                  >
+                    <SettingsMenuSelect
+                      value={chatCompletionSound.soundId}
+                      onValueChange={handleChatCompletionSoundIdChange}
+                      options={CHAT_COMPLETION_SOUND_OPTIONS.map(({ id, label, description }) => ({
+                        value: id,
+                        label,
+                        description,
+                      }))}
+                      searchable={false}
+                      menuWidth={260}
+                    />
+                  </SettingsRow>
                 </SettingsCard>
               </SettingsSection>
 

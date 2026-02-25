@@ -21,6 +21,13 @@ export interface DiffViewerPreferences {
   disableBackground?: boolean;
 }
 
+export interface ChatCompletionSoundPreferences {
+  /** Whether chat completion sound is enabled */
+  enabled?: boolean;
+  /** Selected completion sound */
+  soundId?: 'chime' | 'glass' | 'wood';
+}
+
 export interface UserPreferences {
   name?: string;
   timezone?: string;
@@ -30,6 +37,8 @@ export interface UserPreferences {
   notes?: string;
   // Diff viewer display preferences
   diffViewer?: DiffViewerPreferences;
+  // Background completion sound preferences
+  chatCompletionSound?: ChatCompletionSoundPreferences;
   // When the preferences were last updated
   updatedAt?: number;
 }
@@ -66,6 +75,10 @@ export function updatePreferences(updates: Partial<UserPreferences>): UserPrefer
     diffViewer: updates.diffViewer
       ? { ...current.diffViewer, ...updates.diffViewer }
       : current.diffViewer,
+    // Merge chat completion sound settings if provided
+    chatCompletionSound: updates.chatCompletionSound
+      ? { ...current.chatCompletionSound, ...updates.chatCompletionSound }
+      : current.chatCompletionSound,
   };
   savePreferences(updated);
   return updated;

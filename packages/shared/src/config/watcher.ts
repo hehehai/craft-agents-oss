@@ -79,6 +79,10 @@ export interface UserPreferences {
   };
   language?: string;
   notes?: string;
+  chatCompletionSound?: {
+    enabled?: boolean;
+    soundId?: 'chime' | 'glass' | 'wood';
+  };
   updatedAt?: number;
 }
 

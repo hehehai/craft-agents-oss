@@ -27,6 +27,14 @@ import { stripMarkdown } from './utils/text'
 import { extractWorkspaceSlugFromPath } from '@craft-agent/shared/utils/workspace-slug'
 import { initRendererPerf } from './lib/perf'
 import {
+  CHAT_COMPLETION_SOUND_CHANGED_EVENT,
+  DEFAULT_CHAT_COMPLETION_SOUND,
+  normalizeChatCompletionSound,
+  playChatCompletionSound,
+  readChatCompletionSoundPreference,
+  type ChatCompletionSoundPreference,
+} from './lib/chat-completion-sound'
+import {
   initializeSessionsAtom,
   addSessionAtom,
   removeSessionAtom,
@@ -376,6 +384,38 @@ export default function App() {
     onNavigateToSession: handleNavigateToSession,
     enabled: notificationsEnabled,
   })
+  const [chatCompletionSound, setChatCompletionSound] = useState<ChatCompletionSoundPreference>(DEFAULT_CHAT_COMPLETION_SOUND)
+  const chatCompletionSoundRef = useRef(chatCompletionSound)
+  const isWindowFocusedRef = useRef(isWindowFocused)
+
+  useEffect(() => {
+    chatCompletionSoundRef.current = chatCompletionSound
+  }, [chatCompletionSound])
+
+  useEffect(() => {
+    isWindowFocusedRef.current = isWindowFocused
+  }, [isWindowFocused])
+
+  useEffect(() => {
+    let cancelled = false
+
+    readChatCompletionSoundPreference().then((preferences) => {
+      if (cancelled) return
+      setChatCompletionSound(preferences)
+    })
+
+    const handleSoundPreferenceChange = (event: Event) => {
+      const next = (event as CustomEvent<ChatCompletionSoundPreference>).detail
+      setChatCompletionSound(normalizeChatCompletionSound(next))
+    }
+
+    window.addEventListener(CHAT_COMPLETION_SOUND_CHANGED_EVENT, handleSoundPreferenceChange)
+
+    return () => {
+      cancelled = true
+      window.removeEventListener(CHAT_COMPLETION_SOUND_CHANGED_EVENT, handleSoundPreferenceChange)
+    }
+  }, [])
 
   // Load workspaces, sessions, model, notifications setting, and drafts when app is ready
   useEffect(() => {
@@ -599,6 +639,11 @@ export default function App() {
             const rawPreview = lastMessage?.content?.substring(0, 200) || undefined
             const preview = rawPreview ? stripMarkdown(rawPreview).substring(0, 100) || undefined : undefined
             showSessionNotification(updatedSession, preview)
+
+            const soundPreference = chatCompletionSoundRef.current
+            if (!isWindowFocusedRef.current && soundPreference.enabled) {
+              void playChatCompletionSound(soundPreference.soundId)
+            }
           }
         }
 

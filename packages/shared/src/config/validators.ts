@@ -102,12 +102,18 @@ const LocationSchema = z.object({
   country: z.string().optional(),
 });
 
+const ChatCompletionSoundSchema = z.object({
+  enabled: z.boolean().optional(),
+  soundId: z.enum(['chime', 'glass', 'wood']).optional(),
+});
+
 export const UserPreferencesSchema = z.object({
   name: z.string().optional(),
   timezone: z.string().optional(),  // TODO: Could validate against IANA timezone list
   location: LocationSchema.optional(),
   language: z.string().optional(),
   notes: z.string().optional(),
+  chatCompletionSound: ChatCompletionSoundSchema.optional(),
   updatedAt: z.number().int().min(0).optional(),
 });
 
