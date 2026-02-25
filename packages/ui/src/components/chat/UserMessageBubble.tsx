@@ -244,7 +244,7 @@ function renderContentWithBadges(
         mode="minimal"
         onUrlClick={onUrlClick}
         onFileClick={onFileClick}
-        className="text-sm [&_a]:underline [&_code]:bg-foreground/10 [&_p]:whitespace-pre-wrap"
+        className="text-[length:var(--chat-font-size,13px)] leading-[var(--chat-line-height,1.6)] [&_code]:bg-foreground/10 [&_p]:whitespace-pre-wrap"
       >
         {content}
       </Markdown>
@@ -301,7 +301,7 @@ function renderContentWithBadges(
   }
 
   // Use <p> to match Markdown's block-level line-height behavior
-  return <p className="text-sm">{elements}</p>
+  return <p className="text-[length:var(--chat-font-size,13px)] leading-[var(--chat-line-height,1.6)]">{elements}</p>
 }
 
 export interface UserMessageBubbleProps {
@@ -446,7 +446,7 @@ export function UserMessageBubble({
               mode="minimal"
               onUrlClick={onUrlClick}
               onFileClick={onFileClick}
-              className="text-sm [&_a]:underline [&_code]:bg-foreground/10 [&_p]:whitespace-pre-wrap"
+              className="text-[length:var(--chat-font-size,13px)] leading-[var(--chat-line-height,1.6)] [&_code]:bg-foreground/10 [&_p]:whitespace-pre-wrap"
             >
               {displayContent}
             </Markdown>

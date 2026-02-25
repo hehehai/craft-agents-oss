@@ -24,6 +24,7 @@ import {
   SettingsRow,
   SettingsSegmentedControl,
   SettingsMenuSelect,
+  SettingsInput,
   SettingsToggle,
 } from '@/components/settings'
 import * as storage from '@/lib/local-storage'
@@ -31,10 +32,22 @@ import { useWorkspaceIcons } from '@/hooks/useWorkspaceIcon'
 import { Info_DataTable, SortableHeader } from '@/components/info/Info_DataTable'
 import { Info_Badge } from '@/components/info/Info_Badge'
 import type { PresetTheme } from '@config/theme'
+import {
+  DEFAULT_CHAT_TYPOGRAPHY,
+  readChatTypographyPreference,
+  type ChatTypographyPreference,
+  writeChatTypographyPreference,
+} from '@/lib/chat-typography'
 
 export const meta: DetailsPageMeta = {
   navigator: 'settings',
   slug: 'appearance',
+}
+
+function parsePositiveNumber(raw: string): number | null {
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed) || parsed <= 0) return null
+  return parsed
 }
 
 // ============================================
@@ -129,6 +142,67 @@ export default function AppearanceSettingsPage() {
     setRichToolDescriptions(checked)
     await window.electronAPI?.setRichToolDescriptions?.(checked)
   }, [])
+
+  const [chatTypography, setChatTypography] = useState<ChatTypographyPreference>(DEFAULT_CHAT_TYPOGRAPHY)
+  const [chatFontFamilyInput, setChatFontFamilyInput] = useState(DEFAULT_CHAT_TYPOGRAPHY.fontFamily)
+  const [chatFontSizeInput, setChatFontSizeInput] = useState(String(DEFAULT_CHAT_TYPOGRAPHY.fontSize))
+  const [chatLineHeightInput, setChatLineHeightInput] = useState(String(DEFAULT_CHAT_TYPOGRAPHY.lineHeight))
+  const [chatFontSizeError, setChatFontSizeError] = useState<string | undefined>()
+  const [chatLineHeightError, setChatLineHeightError] = useState<string | undefined>()
+
+  useEffect(() => {
+    let cancelled = false
+    readChatTypographyPreference().then((preferences) => {
+      if (cancelled) return
+      setChatTypography(preferences)
+      setChatFontFamilyInput(preferences.fontFamily)
+      setChatFontSizeInput(String(preferences.fontSize))
+      setChatLineHeightInput(String(preferences.lineHeight))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const saveChatTypography = useCallback(async (next: ChatTypographyPreference) => {
+    setChatTypography(next)
+    await writeChatTypographyPreference(next)
+  }, [])
+
+  const handleChatFontFamilyCommit = useCallback(() => {
+    const nextFamily = chatFontFamilyInput.trim()
+    setChatFontFamilyInput(nextFamily)
+    if (nextFamily === chatTypography.fontFamily) return
+    void saveChatTypography({ ...chatTypography, fontFamily: nextFamily })
+  }, [chatFontFamilyInput, chatTypography, saveChatTypography])
+
+  const handleChatFontSizeCommit = useCallback(() => {
+    const parsed = parsePositiveNumber(chatFontSizeInput)
+    if (parsed === null) {
+      setChatFontSizeError('Please enter a number greater than 0.')
+      return
+    }
+
+    setChatFontSizeError(undefined)
+    const nextFontSize = Math.round(parsed)
+    setChatFontSizeInput(String(nextFontSize))
+    if (nextFontSize === chatTypography.fontSize) return
+    void saveChatTypography({ ...chatTypography, fontSize: nextFontSize })
+  }, [chatFontSizeInput, chatTypography, saveChatTypography])
+
+  const handleChatLineHeightCommit = useCallback(() => {
+    const parsed = parsePositiveNumber(chatLineHeightInput)
+    if (parsed === null) {
+      setChatLineHeightError('Please enter a number greater than 0.')
+      return
+    }
+
+    setChatLineHeightError(undefined)
+    const nextLineHeight = Math.round(parsed * 100) / 100
+    setChatLineHeightInput(String(nextLineHeight))
+    if (nextLineHeight === chatTypography.lineHeight) return
+    void saveChatTypography({ ...chatTypography, lineHeight: nextLineHeight })
+  }, [chatLineHeightInput, chatTypography, saveChatTypography])
 
   // Load preset themes on mount
   useEffect(() => {
@@ -264,6 +338,68 @@ export default function AppearanceSettingsPage() {
                       ]}
                     />
                   </SettingsRow>
+                </SettingsCard>
+              </SettingsSection>
+
+              {/* Chat Typography */}
+              <SettingsSection
+                title="Chat Typography"
+                description="Customize chat message text and tool card readability."
+              >
+                <SettingsCard divided>
+                  <SettingsInput
+                    label="Chat Font Family"
+                    description="Enter a font family name (for example: Inter, SF Pro Text, JetBrains Mono)."
+                    value={chatFontFamilyInput}
+                    onChange={setChatFontFamilyInput}
+                    onBlur={handleChatFontFamilyCommit}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        handleChatFontFamilyCommit()
+                      }
+                    }}
+                    placeholder="System default"
+                    inCard
+                  />
+                  <SettingsInput
+                    label="Chat Font Size"
+                    description="Size in pixels."
+                    value={chatFontSizeInput}
+                    onChange={(value) => {
+                      setChatFontSizeInput(value)
+                      setChatFontSizeError(undefined)
+                    }}
+                    onBlur={handleChatFontSizeCommit}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        handleChatFontSizeCommit()
+                      }
+                    }}
+                    error={chatFontSizeError}
+                    placeholder="13"
+                    inCard
+                  />
+                  <SettingsInput
+                    label="Chat Line Height"
+                    description="Relative line height (for example: 1.6)."
+                    value={chatLineHeightInput}
+                    onChange={(value) => {
+                      setChatLineHeightInput(value)
+                      setChatLineHeightError(undefined)
+                    }}
+                    onBlur={handleChatLineHeightCommit}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        handleChatLineHeightCommit()
+                      }
+                    }}
+                    error={chatLineHeightError}
+                    placeholder="1.6"
+                    inCard
+                  />
                 </SettingsCard>
               </SettingsSection>
 

@@ -52,6 +52,13 @@ import { useTurnCardExpansion } from "@/hooks/useTurnCardExpansion"
 import type { SessionMeta } from "@/atoms/sessions"
 import { CHAT_LAYOUT } from "@/config/layout"
 import { flattenLabels } from "@craft-agent/shared/labels"
+import {
+  CHAT_TYPOGRAPHY_CHANGED_EVENT,
+  DEFAULT_CHAT_TYPOGRAPHY,
+  normalizeChatTypography,
+  readChatTypographyPreference,
+  type ChatTypographyPreference,
+} from "@/lib/chat-typography"
 
 // ============================================================================
 // Overlay State Types
@@ -955,9 +962,47 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   // Overlay state - controls which overlay is shown (if any)
   const [overlayState, setOverlayState] = useState<OverlayState>(null)
 
+  const [chatTypography, setChatTypography] = useState<ChatTypographyPreference>(DEFAULT_CHAT_TYPOGRAPHY)
+
   // Diff viewer settings - loaded from user preferences on mount, persisted on change
   // These settings are stored in ~/.craft-agent/preferences.json (not localStorage)
   const [diffViewerSettings, setDiffViewerSettings] = useState<Partial<DiffViewerSettings>>({})
+
+  useEffect(() => {
+    let cancelled = false
+    readChatTypographyPreference().then((preferences) => {
+      if (!cancelled) {
+        setChatTypography(preferences)
+      }
+    })
+
+    const handleTypographyChange = (event: Event) => {
+      const next = (event as CustomEvent<ChatTypographyPreference>).detail
+      setChatTypography(normalizeChatTypography(next))
+    }
+
+    window.addEventListener(CHAT_TYPOGRAPHY_CHANGED_EVENT, handleTypographyChange)
+    return () => {
+      cancelled = true
+      window.removeEventListener(CHAT_TYPOGRAPHY_CHANGED_EVENT, handleTypographyChange)
+    }
+  }, [])
+
+  const chatTypographyStyle = useMemo(() => {
+    const style: React.CSSProperties & Record<string, string> = {
+      '--chat-font-size': `${chatTypography.fontSize}px`,
+      '--chat-line-height': String(chatTypography.lineHeight),
+      fontSize: 'var(--chat-font-size)',
+      lineHeight: 'var(--chat-line-height)',
+    }
+
+    if (chatTypography.fontFamily) {
+      style['--chat-font-family'] = chatTypography.fontFamily
+      style.fontFamily = 'var(--chat-font-family)'
+    }
+
+    return style
+  }, [chatTypography])
 
   // Load diff viewer settings from preferences on mount
   useEffect(() => {
@@ -1246,7 +1291,10 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
               }}
             >
               <ScrollArea className="h-full min-w-0" viewportRef={scrollViewportRef}>
-              <div className={cn(CHAT_LAYOUT.maxWidth, "mx-auto", CHAT_LAYOUT.containerPadding, CHAT_LAYOUT.messageSpacing, "min-w-0")}>
+              <div
+                className={cn(CHAT_LAYOUT.maxWidth, "mx-auto", CHAT_LAYOUT.containerPadding, CHAT_LAYOUT.messageSpacing, "min-w-0")}
+                style={chatTypographyStyle}
+              >
                 {/* Session-level AnimatePresence: Prevents layout jump when switching sessions */}
                 <AnimatePresence mode="wait" initial={false}>
                   <motion.div
@@ -1792,7 +1840,7 @@ function ErrorMessage({ message }: { message: Message }) {
         <div className="text-xs text-destructive/50 mb-0.5 font-semibold">
           {message.errorTitle || 'Error'}
         </div>
-        <p className="text-sm text-destructive">{message.content}</p>
+        <p className="text-[length:var(--chat-font-size,13px)] leading-[var(--chat-line-height,1.6)] text-destructive">{message.content}</p>
 
         {/* Collapsible Details Toggle */}
         {hasDetails && (
@@ -1878,7 +1926,7 @@ function MessageBubble({
                 onUrlClick={onOpenUrl}
                 onFileClick={onOpenFile}
                 id={message.id}
-                className="text-sm"
+                className="text-[length:var(--chat-font-size,13px)] leading-[var(--chat-line-height,1.6)]"
                 collapsible
               >
                 {message.content}
@@ -1898,7 +1946,7 @@ function MessageBubble({
   // === STATUS MESSAGE: Matches ProcessingIndicator layout for visual consistency ===
   if (message.role === 'status') {
     return (
-      <div className="flex items-center gap-2 px-3 py-1 -mb-1 text-[13px] text-muted-foreground">
+      <div className="flex items-center gap-2 px-3 py-1 -mb-1 text-[length:var(--chat-font-size,13px)] leading-[var(--chat-line-height,1.6)] text-muted-foreground">
         {/* Spinner in same location as TurnCard chevron */}
         <div className="w-3 h-3 flex items-center justify-center shrink-0">
           <Spinner className="text-[10px]" />
@@ -1916,7 +1964,7 @@ function MessageBubble({
       return (
         <div className="flex items-center gap-3 my-12 px-3">
           <div className="flex-1 h-px bg-border" />
-          <span className="text-sm text-muted-foreground/70 select-none">
+          <span className="text-[length:var(--chat-font-size,13px)] leading-[var(--chat-line-height,1.6)] text-muted-foreground/70 select-none">
             Conversation Compacted
           </span>
           <div className="flex-1 h-px bg-border" />
@@ -1934,7 +1982,7 @@ function MessageBubble({
     const Icon = config.icon
 
     return (
-      <div className={cn('flex items-center gap-2 px-3 py-1 text-[13px] select-none', config.className)}>
+      <div className={cn('flex items-center gap-2 px-3 py-1 text-[length:var(--chat-font-size,13px)] leading-[var(--chat-line-height,1.6)] select-none', config.className)}>
         <div className="w-3 h-3 flex items-center justify-center shrink-0">
           <Icon className="w-3 h-3" />
         </div>
@@ -1951,7 +1999,7 @@ function MessageBubble({
           <div className="text-xs text-info/50 mb-0.5 font-semibold">
             Warning
           </div>
-          <p className="text-sm text-info">{message.content}</p>
+          <p className="text-[length:var(--chat-font-size,13px)] leading-[var(--chat-line-height,1.6)] text-info">{message.content}</p>
         </div>
       </div>
     )

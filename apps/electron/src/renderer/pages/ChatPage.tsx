@@ -7,7 +7,7 @@
 
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { AlertCircle, Globe, Copy, RefreshCw, Link2Off, Info } from 'lucide-react'
+import { AlertCircle, Globe, Copy, RefreshCw, Link2Off, Info, Braces, Check, ChevronDown, FolderOpen, Ghost, Hammer, MousePointer2, TerminalSquare, Zap } from 'lucide-react'
 import { ChatDisplay, type ChatDisplayHandle } from '@/components/app-shell/ChatDisplay'
 import { PanelHeader } from '@/components/app-shell/PanelHeader'
 import { SessionMenu } from '@/components/app-shell/SessionMenu'
@@ -19,13 +19,91 @@ import { StyledDropdownMenuContent, StyledDropdownMenuItem, StyledDropdownMenuSe
 import { useAppShellContext, usePendingPermission, usePendingCredential, useSessionOptionsFor, useSession as useSessionData } from '@/context/AppShellContext'
 import { rendererPerf } from '@/lib/perf'
 import { routes } from '@/lib/navigate'
+import { isMac } from '@/lib/platform'
 import { ensureSessionMessagesLoadedAtom, loadedSessionsAtom, sessionMetaMapAtom } from '@/atoms/sessions'
 import { getSessionTitle } from '@/utils/session'
 // Model resolution: connection.defaultModel (no hardcoded defaults)
 import { resolveEffectiveConnectionSlug, isSessionConnectionUnavailable } from '@config/llm-connections'
+import type { WorkingDirectoryLauncher } from '../../shared/types'
 
 export interface ChatPageProps {
   sessionId: string
+}
+
+const DEFAULT_FOLDER_LAUNCHER: WorkingDirectoryLauncher = 'finder'
+const FOLDER_LAUNCHER_PREFERENCES_KEY = 'folderLauncherBySession'
+
+const FOLDER_LAUNCHER_ITEMS: ReadonlyArray<{
+  id: WorkingDirectoryLauncher
+  label: string
+  Icon: React.ComponentType<{ className?: string }>
+}> = [
+  { id: 'cursor', label: 'Cursor', Icon: MousePointer2 },
+  { id: 'zed', label: 'Zed', Icon: Zap },
+  { id: 'xcode', label: 'Xcode', Icon: Hammer },
+  { id: 'vscode', label: 'VSCode', Icon: Braces },
+  { id: 'ghostty', label: 'Ghostty', Icon: Ghost },
+  { id: 'terminal', label: 'Terminal', Icon: TerminalSquare },
+  { id: 'finder', label: 'Finder', Icon: FolderOpen },
+]
+
+const FOLDER_LAUNCHER_IDS = new Set<WorkingDirectoryLauncher>(FOLDER_LAUNCHER_ITEMS.map(item => item.id))
+
+function parseLauncher(value: unknown): WorkingDirectoryLauncher | null {
+  if (typeof value !== 'string') return null
+  if (!FOLDER_LAUNCHER_IDS.has(value as WorkingDirectoryLauncher)) return null
+  return value as WorkingDirectoryLauncher
+}
+
+function parseFolderLauncherMap(content: string): Record<string, WorkingDirectoryLauncher> {
+  const map: Record<string, WorkingDirectoryLauncher> = {}
+  try {
+    const preferences = JSON.parse(content) as Record<string, unknown>
+    const rawMap = preferences[FOLDER_LAUNCHER_PREFERENCES_KEY]
+    if (!rawMap || typeof rawMap !== 'object') return map
+    for (const [sessionId, value] of Object.entries(rawMap as Record<string, unknown>)) {
+      const launcher = parseLauncher(value)
+      if (launcher) map[sessionId] = launcher
+    }
+    return map
+  } catch {
+    return map
+  }
+}
+
+async function getStoredFolderLauncher(sessionId: string): Promise<WorkingDirectoryLauncher> {
+  try {
+    const { content } = await window.electronAPI.readPreferences()
+    const launcherMap = parseFolderLauncherMap(content)
+    return launcherMap[sessionId] ?? DEFAULT_FOLDER_LAUNCHER
+  } catch {
+    return DEFAULT_FOLDER_LAUNCHER
+  }
+}
+
+async function setStoredFolderLauncher(sessionId: string, launcher: WorkingDirectoryLauncher): Promise<void> {
+  try {
+    const { content } = await window.electronAPI.readPreferences()
+    const preferences = JSON.parse(content || '{}') as Record<string, unknown>
+    const launcherMap = parseFolderLauncherMap(content)
+    launcherMap[sessionId] = launcher
+    preferences[FOLDER_LAUNCHER_PREFERENCES_KEY] = launcherMap
+    preferences.updatedAt = Date.now()
+    const result = await window.electronAPI.writePreferences(JSON.stringify(preferences, null, 2))
+    if (result.success) return
+  } catch {
+    // Continue to fallback write below.
+  }
+
+  try {
+    const fallbackPreferences: Record<string, unknown> = {
+      [FOLDER_LAUNCHER_PREFERENCES_KEY]: { [sessionId]: launcher },
+      updatedAt: Date.now(),
+    }
+    await window.electronAPI.writePreferences(JSON.stringify(fallbackPreferences, null, 2))
+  } catch {
+    return
+  }
 }
 
 const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
@@ -39,7 +117,6 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     llmConnections,
     workspaceDefaultLlmConnection,
     onSendMessage,
-    onOpenFile,
     onOpenUrl,
     onRespondToPermission,
     onRespondToCredential,
@@ -79,6 +156,29 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
 
   // Use per-session atom for isolated updates
   const session = useSessionData(sessionId)
+  const [selectedFolderLauncher, setSelectedFolderLauncher] = React.useState<WorkingDirectoryLauncher>(
+    DEFAULT_FOLDER_LAUNCHER
+  )
+  const [isFolderLauncherMenuOpen, setFolderLauncherMenuOpen] = React.useState(false)
+  const launcherItemRefs = React.useRef<Partial<Record<WorkingDirectoryLauncher, HTMLDivElement | null>>>({})
+
+  React.useEffect(() => {
+    let cancelled = false
+    getStoredFolderLauncher(sessionId).then((launcher) => {
+      if (!cancelled) setSelectedFolderLauncher(launcher)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [sessionId])
+
+  React.useEffect(() => {
+    if (!isFolderLauncherMenuOpen) return
+    const frameId = requestAnimationFrame(() => {
+      launcherItemRefs.current[selectedFolderLauncher]?.focus()
+    })
+    return () => cancelAnimationFrame(frameId)
+  }, [isFolderLauncherMenuOpen, selectedFolderLauncher])
 
   // Track if messages are loaded for this session (for lazy loading)
   const loadedSessions = useAtomValue(loadedSessionsAtom)
@@ -202,20 +302,50 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     const connection = connectionSlug ? llmConnections.find(c => c.slug === connectionSlug) : null
 
     return connection?.defaultModel ?? ''
-  }, [session?.id, session?.model, session?.llmConnection, workspaceDefaultLlmConnection, llmConnections, connectionUnavailable])
+  }, [session?.model, session?.llmConnection, workspaceDefaultLlmConnection, llmConnections, connectionUnavailable])
 
   // Working directory for this session
   const workingDirectory = session?.workingDirectory
+  const hasSelectedFolder = React.useMemo(() => {
+    if (!workingDirectory) return false
+    if (!session?.sessionFolderPath) return true
+    return workingDirectory !== session.sessionFolderPath
+  }, [workingDirectory, session?.sessionFolderPath])
+
+  const setLauncherItemRef = React.useCallback(
+    (launcher: WorkingDirectoryLauncher) => (node: HTMLDivElement | null) => {
+      launcherItemRefs.current[launcher] = node
+    },
+    []
+  )
+
+  const persistFolderLauncher = React.useCallback(async (launcher: WorkingDirectoryLauncher) => {
+    setSelectedFolderLauncher(launcher)
+    await setStoredFolderLauncher(sessionId, launcher)
+  }, [sessionId])
+
   const handleWorkingDirectoryChange = React.useCallback(async (path: string) => {
     if (!session) return
     await window.electronAPI.sessionCommand(session.id, { type: 'updateWorkingDirectory', dir: path })
   }, [session])
 
+  const openPathWithLauncher = React.useCallback(async (path: string, launcher: WorkingDirectoryLauncher) => {
+    const result = await window.electronAPI.sessionCommand(
+      sessionId,
+      { type: 'openPathWith', path, launcher }
+    ) as { success: boolean; error?: string } | undefined
+
+    if (result?.success) return
+
+    const launcherLabel = FOLDER_LAUNCHER_ITEMS.find(item => item.id === launcher)?.label ?? launcher
+    toast.error(`Failed to open in ${launcherLabel}`, { description: result?.error || 'Unknown error' })
+  }, [sessionId])
+
   const handleOpenFile = React.useCallback(
     (path: string) => {
-      onOpenFile(path)
+      void openPathWithLauncher(path, selectedFolderLauncher)
     },
-    [onOpenFile]
+    [openPathWithLauncher, selectedFolderLauncher]
   )
 
   const handleOpenUrl = React.useCallback(
@@ -361,11 +491,94 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     }
   }, [sessionId])
 
+  const handleOpenWorkingDirectoryWith = React.useCallback(async (launcher: WorkingDirectoryLauncher) => {
+    await persistFolderLauncher(launcher)
+    if (!hasSelectedFolder) return
+    const result = await window.electronAPI.sessionCommand(
+      sessionId,
+      { type: 'openWorkingDirectoryWith', launcher }
+    ) as { success: boolean; error?: string } | undefined
+
+    if (result?.success) {
+      return
+    }
+
+    const launcherLabel = FOLDER_LAUNCHER_ITEMS.find(item => item.id === launcher)?.label ?? launcher
+    toast.error(`Failed to open in ${launcherLabel}`, { description: result?.error || 'Unknown error' })
+  }, [hasSelectedFolder, persistFolderLauncher, sessionId])
+
+  const handleCopyWorkingDirectoryPath = React.useCallback(async () => {
+    if (!workingDirectory) return
+    await navigator.clipboard.writeText(workingDirectory)
+    toast.success('Path copied to clipboard')
+  }, [workingDirectory])
+
+  const folderLauncherButton = React.useMemo(() => {
+    if (!isMac) return null
+
+    const activeLauncher = FOLDER_LAUNCHER_ITEMS.find(item => item.id === selectedFolderLauncher)
+      ?? FOLDER_LAUNCHER_ITEMS.find(item => item.id === DEFAULT_FOLDER_LAUNCHER)!
+    const ActiveIcon = activeLauncher.Icon
+
+    return (
+      <DropdownMenu open={isFolderLauncherMenuOpen} onOpenChange={setFolderLauncherMenuOpen}>
+        <DropdownMenuTrigger asChild>
+          <HeaderIconButton
+            aria-label={`Open folder with ${activeLauncher.label}`}
+            tooltip={`Open folder with ${activeLauncher.label}`}
+            icon={
+              <span className="inline-flex items-center justify-center gap-1.5">
+                <ActiveIcon className="h-4 w-4" />
+                <ChevronDown className="h-3 w-3 text-muted-foreground" />
+              </span>
+            }
+            className="w-auto px-2.5 rounded-md text-foreground"
+          />
+        </DropdownMenuTrigger>
+        <StyledDropdownMenuContent align="end" sideOffset={8}>
+          {FOLDER_LAUNCHER_ITEMS.map(({ id, label, Icon }) => (
+            <StyledDropdownMenuItem
+              key={id}
+              ref={setLauncherItemRef(id)}
+              onSelect={() => {
+                void handleOpenWorkingDirectoryWith(id)
+              }}
+            >
+              <Icon className="h-3.5 w-3.5" />
+              <span className="flex-1">{label}</span>
+              {selectedFolderLauncher === id && <Check className="h-3.5 w-3.5 text-accent" />}
+            </StyledDropdownMenuItem>
+          ))}
+          <StyledDropdownMenuSeparator />
+          <StyledDropdownMenuItem
+            onSelect={() => {
+              void handleCopyWorkingDirectoryPath()
+            }}
+            disabled={!workingDirectory}
+          >
+            <Copy className="h-3.5 w-3.5" />
+            <span className="flex-1">Copy Path</span>
+          </StyledDropdownMenuItem>
+        </StyledDropdownMenuContent>
+      </DropdownMenu>
+    )
+  }, [
+    selectedFolderLauncher,
+    handleOpenWorkingDirectoryWith,
+    handleCopyWorkingDirectoryPath,
+    isFolderLauncherMenuOpen,
+    setFolderLauncherMenuOpen,
+    setLauncherItemRef,
+    workingDirectory,
+  ])
+
   // Share button with dropdown menu rendered in PanelHeader actions slot
   const shareButton = React.useMemo(() => (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <HeaderIconButton
+          aria-label={sharedUrl ? 'Sharing options' : 'Share online'}
+          tooltip={sharedUrl ? 'Sharing options' : 'Share online'}
           icon={sharedUrl
             ? <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M11.2383 10.2871C11.6481 10.0391 12.1486 10.0082 12.5811 10.1943L12.7617 10.2871L13.0088 10.4414C14.2231 11.227 15.1393 12.2124 15.8701 13.502C16.1424 13.9824 15.9736 14.5929 15.4932 14.8652C15.0127 15.1375 14.4022 14.9688 14.1299 14.4883C13.8006 13.9073 13.4303 13.417 13 12.9883V21C13 21.5523 12.5523 22 12 22C11.4477 22 11 21.5523 11 21V12.9883C10.5697 13.417 10.1994 13.9073 9.87012 14.4883C9.59781 14.9688 8.98732 15.1375 8.50684 14.8652C8.02643 14.5929 7.8576 13.9824 8.12988 13.502C8.90947 12.1264 9.90002 11.0972 11.2383 10.2871ZM11.5 3C14.2848 3 16.6594 4.75164 17.585 7.21289C20.1294 7.90815 22 10.235 22 13C22 16.3137 19.3137 19 16 19H15V16.9961C15.5021 16.9966 16.0115 16.8707 16.4795 16.6055C17.9209 15.7885 18.4272 13.9571 17.6104 12.5156C16.6661 10.8495 15.4355 9.56805 13.7969 8.57617C12.692 7.90745 11.308 7.90743 10.2031 8.57617C8.56453 9.56806 7.3339 10.8495 6.38965 12.5156C5.57277 13.957 6.07915 15.7885 7.52051 16.6055C7.98851 16.8707 8.49794 16.9966 9 16.9961V19H7C4.23858 19 2 16.7614 2 14C2 11.9489 3.23498 10.1861 5.00195 9.41504C5.04745 5.86435 7.93852 3 11.5 3Z" />
@@ -422,8 +635,15 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     </DropdownMenu>
   ), [sharedUrl, handleShare, handleOpenInBrowser, handleCopyLink, handleUpdateShare, handleRevokeShare])
 
+  const headerActions = React.useMemo(() => (
+    <div className="flex items-center gap-1">
+      {folderLauncherButton}
+      {shareButton}
+    </div>
+  ), [folderLauncherButton, shareButton])
+
   // Build title menu content for chat sessions using shared SessionMenu
-  const sessionLabels = session?.labels ?? []
+  const sessionLabels = React.useMemo(() => session?.labels ?? [], [session?.labels])
   const titleMenu = React.useMemo(() => (
     <SessionMenu
       sessionId={sessionId}
@@ -493,7 +713,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
       return (
         <>
           <div className="h-full flex flex-col">
-            <PanelHeader  title={displayTitle} titleMenu={titleMenu} actions={shareButton} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
+            <PanelHeader  title={displayTitle} titleMenu={titleMenu} actions={headerActions} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
             <div className="flex-1 flex flex-col min-h-0">
               <ChatDisplay
                 ref={chatDisplayRef}
@@ -562,7 +782,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
   return (
     <>
       <div className="h-full flex flex-col">
-        <PanelHeader  title={displayTitle} titleMenu={titleMenu} actions={shareButton} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
+        <PanelHeader  title={displayTitle} titleMenu={titleMenu} actions={headerActions} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
         <div className="flex-1 flex flex-col min-h-0">
           <ChatDisplay
             ref={chatDisplayRef}

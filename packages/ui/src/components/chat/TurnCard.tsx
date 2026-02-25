@@ -140,7 +140,7 @@ function computeEditWriteDiffStats(
 /** Shared size configuration for activity UI - exported for reuse in inline execution */
 export const SIZE_CONFIG = {
   /** Base font size class for all text */
-  fontSize: 'text-[13px]',
+  fontSize: 'text-[length:var(--chat-font-size,13px)]',
   /** Icon size class (width and height) */
   iconSize: 'w-3 h-3',
   /** Spinner text size class */
@@ -1471,7 +1471,7 @@ export function ResponseCard({
           {/* Footer with actions - hidden in compact mode */}
           {!compactMode && (
             <div className={cn(
-              "pl-4 pr-2.5 py-2 border-t border-border/30 flex items-center justify-between bg-muted/20",
+              "pl-4 pr-2.5 py-1.5 border-t border-border/30 flex items-center justify-between bg-muted/20",
               SIZE_CONFIG.fontSize
             )}>
               {/* Left side - Copy and View as Markdown */}

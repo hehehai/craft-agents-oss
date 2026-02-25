@@ -4,12 +4,12 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { normalize, isAbsolute, join, basename, dirname, resolve, relative, sep } from 'path'
 import { homedir, tmpdir } from 'os'
 import { randomUUID } from 'crypto'
-import { execSync } from 'child_process'
+import { execFile, execSync } from 'child_process'
 import { SessionManager } from './sessions'
 import { ipcLog, windowLog, searchLog } from './logger'
 import { WindowManager } from './window-manager'
 import { registerOnboardingHandlers } from './onboarding'
-import { IPC_CHANNELS, type FileAttachment, type StoredAttachment, type SendMessageOptions, type LlmConnectionSetup } from '../shared/types'
+import { IPC_CHANNELS, type FileAttachment, type StoredAttachment, type SendMessageOptions, type LlmConnectionSetup, type WorkingDirectoryLauncher } from '../shared/types'
 import { readFileAttachment, perf, validateImageForClaudeAPI, IMAGE_LIMITS } from '@craft-agent/shared/utils'
 import { safeJsonParse } from '@craft-agent/shared/utils/files'
 import { getPreferencesPath, getSessionDraft, setSessionDraft, deleteSessionDraft, getAllSessionDrafts, getWorkspaceByNameOrId, addWorkspace, setActiveWorkspace, removeWorkspace, loadStoredConfig, saveConfig, type Workspace, getLlmConnections, getLlmConnection, addLlmConnection, updateLlmConnection, deleteLlmConnection, getDefaultLlmConnection, setDefaultLlmConnection, touchLlmConnection, isCompatProvider, isAnthropicProvider, isOpenAIProvider, isCopilotProvider, getDefaultModelsForConnection, getDefaultModelForConnection, type LlmConnection, type LlmConnectionWithStatus, getGitBashPath, setGitBashPath, clearGitBashPath } from '@craft-agent/shared/config'
@@ -631,6 +631,49 @@ async function validateFilePath(filePath: string): Promise<string> {
   return realPath
 }
 
+const MACOS_LAUNCHER_APP_NAMES: Record<Exclude<WorkingDirectoryLauncher, 'finder'>, string> = {
+  cursor: 'Cursor',
+  zed: 'Zed',
+  xcode: 'Xcode',
+  vscode: 'Visual Studio Code',
+  ghostty: 'Ghostty',
+  terminal: 'Terminal',
+}
+
+const LAUNCHER_DISPLAY_NAMES: Record<WorkingDirectoryLauncher, string> = {
+  cursor: 'Cursor',
+  zed: 'Zed',
+  xcode: 'Xcode',
+  vscode: 'VSCode',
+  ghostty: 'Ghostty',
+  terminal: 'Terminal',
+  finder: 'Finder',
+}
+
+function isMissingAppError(message: string): boolean {
+  return /unable to find application|application named .* (could not|cannot) be found|not found/i.test(message)
+}
+
+async function openPathWithLauncher(path: string, launcher: WorkingDirectoryLauncher): Promise<void> {
+  if (launcher === 'finder') {
+    const result = await shell.openPath(path)
+    if (result) throw new Error(result)
+    return
+  }
+
+  const appName = MACOS_LAUNCHER_APP_NAMES[launcher]
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    execFile('open', ['-a', appName, path], (error, _stdout, stderr) => {
+      if (!error) {
+        resolvePromise()
+        return
+      }
+      const message = stderr?.trim() || error.message || 'Unknown error'
+      rejectPromise(new Error(message))
+    })
+  })
+}
+
 export function registerIpcHandlers(sessionManager: SessionManager, windowManager: WindowManager): void {
   // Get all sessions for the calling window's workspace
   // Waits for initialization to complete so sessions are never returned empty during startup
@@ -962,6 +1005,49 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
         // Return the session folder path for copying to clipboard
         const sessionPath = sessionManager.getSessionPath(sessionId)
         return sessionPath ? { success: true, path: sessionPath } : { success: false }
+      }
+      case 'openWorkingDirectoryWith': {
+        if (process.platform !== 'darwin') {
+          return { success: false, error: 'Opening with launcher is currently supported on macOS only.' }
+        }
+
+        const workingDirectory = sessionManager.getSessionWorkingDirectory(sessionId)
+        if (!workingDirectory) {
+          return { success: false, error: 'No selected folder in this session.' }
+        }
+
+        try {
+          const safePath = await validateFilePath(resolve(workingDirectory))
+          await openPathWithLauncher(safePath, command.launcher)
+          return { success: true }
+        } catch (error) {
+          const rawMessage = error instanceof Error ? error.message : String(error)
+          const launcherLabel = LAUNCHER_DISPLAY_NAMES[command.launcher]
+          const message = isMissingAppError(rawMessage)
+            ? `${launcherLabel} is not installed.`
+            : rawMessage
+          ipcLog.error(`[SESSION_COMMAND] openWorkingDirectoryWith failed (${command.launcher}): ${rawMessage}`)
+          return { success: false, error: message }
+        }
+      }
+      case 'openPathWith': {
+        if (process.platform !== 'darwin') {
+          return { success: false, error: 'Opening with launcher is currently supported on macOS only.' }
+        }
+
+        try {
+          const safePath = await validateFilePath(resolve(command.path))
+          await openPathWithLauncher(safePath, command.launcher)
+          return { success: true }
+        } catch (error) {
+          const rawMessage = error instanceof Error ? error.message : String(error)
+          const launcherLabel = LAUNCHER_DISPLAY_NAMES[command.launcher]
+          const message = isMissingAppError(rawMessage)
+            ? `${launcherLabel} is not installed.`
+            : rawMessage
+          ipcLog.error(`[SESSION_COMMAND] openPathWith failed (${command.launcher}): ${rawMessage}`)
+          return { success: false, error: message }
+        }
       }
       case 'shareToViewer':
         return sessionManager.shareToViewer(sessionId)
@@ -3714,7 +3800,11 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
   // Generic workspace image loading (for source icons, status icons, etc.)
   ipcMain.handle(IPC_CHANNELS.WORKSPACE_READ_IMAGE, async (_event, workspaceId: string, relativePath: string) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
-    if (!workspace) throw new Error('Workspace not found')
+    if (!workspace) {
+      // Workspace may have been deleted/reassigned while renderer still has stale icon requests.
+      // Return null for stable fallback behavior instead of throwing noisy IPC errors.
+      return null
+    }
 
     const { readFileSync, existsSync } = await import('fs')
     const { join, normalize } = await import('path')

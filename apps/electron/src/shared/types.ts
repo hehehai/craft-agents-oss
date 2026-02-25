@@ -535,6 +535,8 @@ export type SessionCommand =
   | { type: 'setLabels'; labels: string[] }
   | { type: 'showInFinder' }
   | { type: 'copyPath' }
+  | { type: 'openWorkingDirectoryWith'; launcher: WorkingDirectoryLauncher }
+  | { type: 'openPathWith'; path: string; launcher: WorkingDirectoryLauncher }
   | { type: 'shareToViewer' }
   | { type: 'updateShare' }
   | { type: 'revokeShare' }
@@ -551,6 +553,15 @@ export type SessionCommand =
   | { type: 'updateSiblingOrder'; orderedSessionIds: string[] }
   | { type: 'archiveCascade' }
   | { type: 'deleteCascade' }
+
+export type WorkingDirectoryLauncher =
+  | 'cursor'
+  | 'zed'
+  | 'xcode'
+  | 'vscode'
+  | 'ghostty'
+  | 'terminal'
+  | 'finder'
 
 /**
  * Session family information (parent + siblings)
